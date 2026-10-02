@@ -1,0 +1,33 @@
+const server = Bun.serve({
+  port: 0,
+  idleTimeout: 0,
+  error(err) {
+    console.error("error handler called");
+    return new Response("Failed", { status: 555 });
+  },
+
+  async fetch(request) {
+    const { pathname } = new URL(request.url);
+    return new Response(
+      new ReadableStream({
+        pull(controller) {
+          if (pathname === "/write") {
+            controller.enqueue("Hello, ");
+            controller.enqueue("world!");
+            controller.close();
+          }
+          throw new Error("Oops");
+        },
+        cancel(reason) {},
+      }),
+      {
+        status: 402,
+        headers: {
+          "X-Hey": "123",
+        },
+      },
+    );
+  },
+});
+
+process.send(`${server.url}`);

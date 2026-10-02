@@ -1,0 +1,81 @@
+import assert from "node:assert";
+import { exampleSite } from "node-harness";
+import { createServer, request } from "node:http";
+
+export async function run() {
+  const { promise, resolve, reject } = Promise.withResolvers();
+  await using server = exampleSite("http");
+  const proxyServer = createServer(function (req, res) {
+    // Use URL object instead of deprecated url.parse
+    const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
+
+    const options = {
+      protocol: parsedUrl.protocol,
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port,
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: req.method,
+      headers: req.headers,
+    };
+
+    const proxyRequest = request(options, function (proxyResponse) {
+      res.writeHead(proxyResponse.statusCode, proxyResponse.headers);
+      proxyResponse.pipe(res); // Use pipe instead of manual data handling
+    });
+
+    proxyRequest.on("error", error => {
+      console.error("Proxy Request Error:", error);
+      res.writeHead(500);
+      res.end("Proxy Error");
+    });
+
+    req.pipe(proxyRequest); // Use pipe instead of manual data handling
+  });
+
+  // Bind and connect on the same concrete address. "localhost" can resolve to
+  // ::1 for listen and 127.0.0.1 for connect on a dual-stack host.
+  proxyServer.listen(0, "127.0.0.1", async () => {
+    const address = proxyServer.address();
+
+    const options = {
+      protocol: "http:",
+      hostname: "127.0.0.1",
+      port: address.port,
+      path: "/", // Change path to /
+      headers: {
+        Host: server.url.host,
+        "accept-encoding": "identity",
+      },
+    };
+
+    const req = request(options, res => {
+      let data = "";
+      res.on("data", chunk => {
+        data += chunk;
+      });
+      res.on("end", () => {
+        try {
+          assert.strictEqual(res.statusCode, 200);
+          assert(data.length > 0);
+          assert(data.includes("This domain is for use in illustrative examples in documents"));
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+
+    req.on("error", err => {
+      reject(err);
+    });
+
+    req.end();
+  });
+
+  await promise;
+  proxyServer.close();
+}
+
+if (import.meta.main) {
+  run().catch(console.error);
+}

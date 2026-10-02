@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "skipLibCheck": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "declarationDir": "out"
+  },
+  "include": ["**/*.ts"],
+  // ts7.1/ uses syntax that the repository's TypeScript cannot parse yet.
+  "exclude": ["dist", "node_modules", "ts7.1"]
+}

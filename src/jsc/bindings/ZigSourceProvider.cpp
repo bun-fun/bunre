@@ -41,23 +41,9 @@ SourceOrigin toSourceOrigin(const String& sourceURL, bool isBuiltin)
     return SourceOrigin(WTF::URL::fileURLWithFileSystemPath(sourceURL));
 }
 
-extern "C" int ByteRangeMapping__getSourceID(void* mappings);
-extern "C" void* ByteRangeMapping__find(const BunString* sourceURL);
 
-extern "C" void ByteRangeMapping__generate(const BunString* sourceURL, const BunString* code, int sourceID);
 
-JSC::SourceID sourceIDForSourceURL(const WTF::String& sourceURL)
-{
-    BunString sourceURLBunString = Bun::toString(sourceURL);
-    void* mappings = ByteRangeMapping__find(&sourceURLBunString);
-    if (!mappings) {
-        return 0;
-    }
 
-    return ByteRangeMapping__getSourceID(mappings);
-}
-
-extern "C" bool BunTest__shouldGenerateCodeCoverage(const BunString* sourceURL);
 extern "C" void Bun__addSourceProviderSourceMap(void* bun_vm, SourceProvider* opaque_source_provider, const BunString* specifier);
 extern "C" void Bun__removeSourceProviderSourceMap(void* bun_vm, SourceProvider* opaque_source_provider, const BunString* specifier);
 
@@ -78,13 +64,6 @@ Ref<SourceProvider> SourceProvider::create(
     auto string = resolvedSource.source_code.transferToWTFString();
     auto sourceURLString = resolvedSource.source_url.transferToWTFString();
 
-    bool isCodeCoverageEnabled = !!globalObject->vm().controlFlowProfiler();
-
-    bool shouldGenerateCodeCoverage = false;
-    if (isCodeCoverageEnabled && !isBuiltin) {
-        BunString sourceURLBunString = Bun::toString(sourceURLString);
-        shouldGenerateCodeCoverage = BunTest__shouldGenerateCodeCoverage(&sourceURLBunString);
-    }
 
     const auto getSourceOrigin = [&]() -> SourceOrigin {
         auto originPath = resolvedSource.origin_path.transferToWTFString();
@@ -129,12 +108,6 @@ Ref<SourceProvider> SourceProvider::create(
 
     auto provider = getProvider();
 
-    if (shouldGenerateCodeCoverage) {
-        BunString providerURL = Bun::toString(provider->sourceURL());
-        WTF::String providerSourceString = provider->source().toStringWithoutCopying();
-        BunString providerSource = Bun::toString(providerSourceString);
-        ByteRangeMapping__generate(&providerURL, &providerSource, provider->asID());
-    }
 
     if (provider->m_alreadyBundled) {
         BunString str = Bun::toString(provider->sourceURL());

@@ -1,7 +1,7 @@
 // clang-format off
 #include "BakeSourceProvider.h"
 #include "DevServerSourceProvider.h"
-#include "BakeGlobalObject.h"
+#include "ZigGlobalObject.h"
 #include "JavaScriptCore/CallData.h"
 #include "JavaScriptCore/Completion.h"
 #include "JavaScriptCore/Identifier.h"
@@ -19,11 +19,6 @@
 namespace Bake {
 
   
-extern "C" BunString BakeSourceProvider__getSourceSlice(SourceProvider* provider)
-{
-    return Bun::toStringView(provider->source());
-}
-
 extern "C" JSC::EncodedJSValue BakeLoadInitialServerCode(JSC::JSGlobalObject* global, BunString source, bool separateSSRGraph) {
   auto& vm = JSC::getVM(global);
   auto scope = DECLARE_THROW_SCOPE(vm);
@@ -54,11 +49,11 @@ extern "C" JSC::EncodedJSValue BakeLoadInitialServerCode(JSC::JSGlobalObject* gl
   RELEASE_AND_RETURN(scope, JSC::JSValue::encode(JSC::profiledCall(global, JSC::ProfilingReason::API, fn, callData, JSC::jsUndefined(), args)));
 }
 
-extern "C" JSC::JSPromise* BakeLoadModuleByKey(GlobalObject* global, JSC::JSString* key) {
+extern "C" JSC::JSPromise* BakeLoadModuleByKey(Zig::GlobalObject* global, JSC::JSString* key) {
   return JSC::loadAndEvaluateModule(global, key->getString(global), nullptr, nullptr);
 }
 
-extern "C" JSC::EncodedJSValue BakeLoadServerHmrPatch(GlobalObject* global, BunString source) {
+extern "C" JSC::EncodedJSValue BakeLoadServerHmrPatch(Zig::GlobalObject* global, BunString source) {
   JSC::VM&vm = global->vm();
   auto scope = DECLARE_THROW_SCOPE(vm);
 
@@ -80,7 +75,7 @@ extern "C" JSC::EncodedJSValue BakeLoadServerHmrPatch(GlobalObject* global, BunS
   return JSC::JSValue::encode(result);
 }
 
-extern "C" JSC::EncodedJSValue BakeLoadServerHmrPatchWithSourceMap(GlobalObject* global, BunString source, const char* sourceMapJSONPtr, size_t sourceMapJSONLength) {
+extern "C" JSC::EncodedJSValue BakeLoadServerHmrPatchWithSourceMap(Zig::GlobalObject* global, BunString source, const char* sourceMapJSONPtr, size_t sourceMapJSONLength) {
   JSC::VM&vm = global->vm();
   auto scope = DECLARE_THROW_SCOPE(vm);
 

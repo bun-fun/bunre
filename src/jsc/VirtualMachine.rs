@@ -35,8 +35,6 @@ pub use crate::process_auto_killer as ProcessAutoKiller;
 static has_bun_garbage_collector_flag_enabled: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 #[unsafe(no_mangle)]
-pub static isBunTest: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-#[unsafe(no_mangle)]
 pub(crate) static Bun__defaultRemainingRunsUntilSkipReleaseAccess: core::sync::atomic::AtomicI32 =
     core::sync::atomic::AtomicI32::new(10);
 
@@ -317,7 +315,6 @@ pub struct VirtualMachine {
     pub(crate) is_handling_uncaught_exception: bool,
     pub(crate) exit_on_uncaught_exception: bool,
 
-    pub modules: crate::async_module::Queue,
     pub aggressive_garbage_collection: GCLevel,
 
     pub module_loader: ModuleLoader::ModuleLoader,
@@ -1662,11 +1659,6 @@ impl VirtualMachine {
             return true;
         }
 
-        if isBunTest.load(core::sync::atomic::Ordering::Relaxed) {
-            self.unhandled_error_counter += 1;
-            (self.on_unhandled_rejection)(self, global_object, err);
-            return true;
-        }
 
         let hooks = runtime_hooks().expect("RuntimeHooks not installed");
         if self.is_handling_uncaught_exception {
@@ -2334,24 +2326,6 @@ pub struct RuntimeHooks {
     pub load_standalone_sourcemap:
         fn(path: &[u8]) -> Option<std::sync::Arc<bun_sourcemap::ParsedSourceMap>>,
     /// `TestReporterAgent.retroactivelyReportDiscoveredTests(agent, next_test_id)`.
-    /// Walks the active test file's
-    /// scope tree and emits `reportTestFoundWithLocation` for every test
-    /// discovered before the inspector connected. `Jest` / `DescribeScope`
-    /// live in `bun_runtime::test_runner` (forward-dep cycle), so the body is
-    /// hoisted to the high tier; low-tier `Bun__TestReporterAgentEnable`
-    /// dispatches here. `next_test_id` / the return value thread
-    /// `TestReporterAgent::next_test_id` through by value; no-op returns it
-    /// unchanged.
-    pub retroactively_report_discovered_tests:
-        unsafe fn(agent: *mut crate::debugger::TestReporterHandle, next_test_id: i32) -> i32,
-    /// Cancel every `TimeoutObject` / `ImmediateObject` still in the calling
-    /// thread's `timer::All` heap so their JS pins and in-heap `+1` refs drop
-    /// before the GC sweep. `timer::All` lives in `bun_runtime` (forward-dep);
-    /// callers (`global_exit`, `WebWorker::shutdown`) are in this crate.
-    ///
-    /// # Safety
-    /// `vm` is the live per-thread VM; `runtime_state` must still be installed
-    /// and the JSC heap must not have been swept yet.
     pub cancel_all_timers: unsafe fn(vm: *mut VirtualMachine),
     /// Destroy the per-VM global DNS resolver's c-ares channel now, while JSC,
     /// the event loop, `RareData.file_polls`, and `runtime_state` are all
@@ -2675,7 +2649,6 @@ impl VirtualMachine {
             addr_of_mut!((*vm).entry_point).write(Default::default());
             addr_of_mut!((*vm).origin).write(Default::default());
             addr_of_mut!((*vm).ref_strings).write(Default::default());
-            addr_of_mut!((*vm).modules).write(Default::default());
             addr_of_mut!((*vm).macro_event_loop).write(EventLoop::default());
             addr_of_mut!((*vm).proxy_env_storage).write(Default::default());
             addr_of_mut!((*vm).gc_controller).write(Default::default());
@@ -3777,11 +3750,6 @@ impl VirtualMachine {
             return;
         }
 
-        if isBunTest.load(core::sync::atomic::Ordering::Relaxed) {
-            self.unhandled_error_counter += 1;
-            (self.on_unhandled_rejection)(self, global_object, reason);
-            return;
-        }
 
         // Each arm drains microtasks on exit — hoisted into a closure.
         let drain = |this: &mut Self| {
@@ -3925,42 +3893,6 @@ impl VirtualMachine {
             let _ = unsafe { (*watcher).add_file_by_path_slow(main) };
         }
     }
-
-    /// `bun_resolver` holds the manager as an opaque forward-decl (it cannot
-    /// depend on `bun_install`). `bun_jsc` *can*, so cast the opaque back to
-    /// the concrete `bun_install::PackageManager` here — the resolver's
-    /// `PackageManager` is exactly that struct, just type-erased at a lower
-    /// tier.
-    ///
-    /// Panics when the lazy init fails (unreadable top-level dir). Production
-    /// callers (AsyncModule's pending-task machinery) only run after a pending
-    /// dependency was enqueued, which requires a previously successful
-    /// `get_package_manager`, so the init error is surfaced as a resolve
-    /// failure in `Resolver::load_node_modules` long before reaching here.
-    /// The one caller outside that machinery is the `bun:internal-for-testing`
-    /// `parseLockfile` binding (`install_jsc/install_binding.rs`), which may
-    /// lazy-init here and accepts the panic on its test-only surface.
-    #[inline]
-    pub fn package_manager(&mut self) -> &mut bun_install::PackageManager {
-        let pm = self
-            .transpiler
-            .get_package_manager()
-            .expect("package manager init already succeeded when the pending task was enqueued");
-        // SAFETY: `bun_resolver::package_json::PackageManager` is an opaque
-        // forward-decl of `bun_install::PackageManager`; the pointer was
-        // produced by `PackageManager::init_with_runtime` (the install crate)
-        // and only ever names that one type, so the concrete 64-byte alignment
-        // is preserved through the `dyn` erasure. On success
-        // `get_package_manager` never returns null (it lazy-inits the
-        // process-static singleton).
-        unsafe {
-            &mut *NonNull::new_unchecked(pm)
-                .cast::<bun_install::PackageManager>()
-                .as_ptr()
-        }
-    }
-
-    /// Performs a hot reload: re-evaluates the entry point once any pending entry-point load settles.
     pub(crate) fn reload(&mut self, _: Option<&mut crate::hot_reloader::HotReloadTask>) {
         if self.hot_reload == HotReload::Watch {
             // Watch reload replaces the process: never defer on a pending
@@ -4743,11 +4675,6 @@ impl VirtualMachine {
         jsc_vm.transpiler.log = &raw mut log;
         jsc_vm.transpiler.resolver.log = NonNull::from(&mut log);
         jsc_vm.transpiler.linker.log = &raw mut log;
-        if let Some(pm) = jsc_vm.transpiler.resolver.package_manager {
-            // SAFETY: the `dyn AutoInstaller` is always `PackageManager`
-            // (sole impl — see `VirtualMachine::package_manager`).
-            unsafe { (*pm.cast::<bun_install::PackageManager>().as_ptr()).log = &raw mut log };
-        }
         // Note: the restore must fire on every exit
         // (including `?` from `ResolveMessage::create` below), so the VM's
         // `log` cannot be left pointing at the dropped stack `log`. Hand-roll
@@ -4768,16 +4695,6 @@ impl VirtualMachine {
                 jsc_vm.transpiler.log = self.old_transpiler_log;
                 jsc_vm.transpiler.resolver.log = self.old_log;
                 jsc_vm.transpiler.linker.log = self.old_log.as_ptr();
-                // `_resolve` may have lazily created the PM with
-                // `pm.log = resolver.log` (our stack `log`), so restore even
-                // if it was `None` when we swapped.
-                if let Some(pm) = jsc_vm.transpiler.resolver.package_manager {
-                    // SAFETY: sole `dyn AutoInstaller` impl is `PackageManager`.
-                    unsafe {
-                        (*pm.cast::<bun_install::PackageManager>().as_ptr()).log =
-                            self.old_log.as_ptr();
-                    }
-                }
             }
         }
         let _restore = RestoreLog {
@@ -4950,51 +4867,6 @@ impl VirtualMachine {
                 .unwrap_or(false)
     }
 
-    /// Resets entry-point state and re-loads `entry_path` for the test runner, returning the load promise.
-    pub(crate) fn reload_entry_point_for_test_runner(
-        &mut self,
-        entry_path: &[u8],
-    ) -> crate::CrateResult<*mut JSInternalPromise> {
-        self.has_loaded = false;
-        self.set_main(entry_path);
-        self.main_resolved_path = bun_core::String::EMPTY;
-        self.main_hash = bun_watcher::Watcher::get_hash(entry_path);
-        self.overridden_main.deinit();
-
-        self.event_loop_mut().ensure_waker();
-
-        let _ = self.ensure_debugger(true);
-
-        if !self.transpiler.options.disable_transpilation {
-            if let Some(hooks) = runtime_hooks() {
-                // SAFETY: hook contract.
-                let p = unsafe { (hooks.load_preloads)(self) }?;
-                if !p.is_null() {
-                    JSValue::from_cell(p).ensure_still_alive();
-                    self.pending_internal_promise = Some(p);
-                    JSValue::from_cell(p).protect();
-                    self.pending_internal_promise_is_protected = true;
-                    return Ok(p);
-                }
-            }
-        }
-
-        // Note: reshaped for borrowck.
-        let global = self.global;
-        let main_str = bun_core::String::from_bytes(self.main());
-        let promise = jsc::JSModuleLoader::load_and_evaluate_module_ptr(global, Some(&main_str))
-            .map(NonNull::as_ptr)
-            .ok_or(crate::CrateError::JSError)?;
-        self.pending_internal_promise = Some(promise);
-        self.pending_internal_promise_is_protected = false;
-        JSValue::from_cell(promise).ensure_still_alive();
-        Ok(promise)
-    }
-
-    /// Load a worker's entry: fetch and link its module graph and begin
-    /// evaluating it. Returns once evaluation has begun (or the load failed) —
-    /// the promise may still be pending on a top-level await, which then
-    /// continues in the worker's normal event loop, as in Node.
     pub(crate) fn load_entry_point_for_web_worker(
         &mut self,
         entry_path: &[u8],
@@ -5010,47 +4882,6 @@ impl VirtualMachine {
         Ok(promise)
     }
 
-    /// Loads a test-file entry point and waits for the load promise to settle.
-    pub fn load_entry_point_for_test_runner(
-        &mut self,
-        entry_path: &[u8],
-    ) -> crate::CrateResult<*mut JSInternalPromise> {
-        let promise = self.reload_entry_point_for_test_runner(entry_path)?;
-
-        // pending_internal_promise can change if hot module reloading is enabled
-        if self.is_watcher_enabled() {
-            loop {
-                let Some(p) = self.pending_internal_promise else {
-                    break;
-                };
-                // SAFETY: `p` is a live JSC heap cell tracked by the VM.
-                if crate::JSPromise::status_ptr(p) != crate::js_promise::Status::Pending {
-                    break;
-                }
-                self.event_loop_mut().tick();
-                let Some(p) = self.pending_internal_promise else {
-                    break;
-                };
-                // SAFETY: see above.
-                if crate::JSPromise::status_ptr(p) == crate::js_promise::Status::Pending {
-                    self.auto_tick();
-                }
-            }
-        } else {
-            // SAFETY: `promise` is a live JSC heap cell.
-            if crate::JSPromise::status_ptr(promise) == crate::js_promise::Status::Rejected {
-                return Ok(promise);
-            }
-            let _ = self.wait_for_promise(jsc::AnyPromise::Internal(promise));
-        }
-
-        // Pre-arm the waker so this settled-promise tick cannot park (#36450).
-        self.wakeup();
-        self.auto_tick();
-        Ok(self.pending_internal_promise.unwrap())
-    }
-
-    /// Tracks a listening socket so watch-mode reloads can close it.
     pub fn add_listening_socket_for_watch_mode(&mut self, socket: bun_sys::Fd) {
         if self.hot_reload != HotReload::Watch && !self.test_isolation_enabled {
             return;

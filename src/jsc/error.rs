@@ -73,8 +73,6 @@ pub enum Error {
     #[error(transparent)]
     Watcher(#[from] bun_watcher::Error),
     #[error(transparent)]
-    Install(#[from] bun_install::Error),
-    #[error(transparent)]
     Ast(#[from] bun_ast::Error),
     #[error(transparent)]
     Patch(#[from] bun_patch::Error),
@@ -128,7 +126,6 @@ impl Error {
             Self::Path(e) => <&'static str>::from(e),
             Self::Bundler(e) => e.name(),
             Self::Watcher(e) => e.name(),
-            Self::Install(e) => e.name(),
             Self::Ast(e) => e.name(),
             Self::Patch(e) => e.name(),
             Self::ToJS(e) => <&'static str>::from(e),

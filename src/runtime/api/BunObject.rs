@@ -83,7 +83,6 @@ use bun_zlib as zlib;
 use crate::api::{HashObject, JSON5Object, TOMLObject, UnsafeObject, XMLObject, YAMLObject};
 use crate::crypto as Crypto;
 use crate::node;
-use crate::test_runner::jest::Jest;
 use bun_collections::index_sort;
 use bun_core::Utf8Bytes;
 use bun_jsc::EncodedSliceJsc as _;
@@ -256,7 +255,6 @@ pub mod bun_object {
         BunObject_callback_gzipSync => JSZlib::gzip_sync,
         BunObject_callback_indexOfLine => super::index_of_line,
         BunObject_callback_inflateSync => JSZlib::inflate_sync,
-        BunObject_callback_jest => Jest::call,
         BunObject_callback_listen => super::static_adapters::listener_listen,
         BunObject_callback_mmap => super::mmap_file,
         BunObject_callback_openInEditor => super::open_in_editor,
@@ -289,7 +287,6 @@ pub mod bun_object {
 
     // --- Lazy property callbacks ---
     export_lazy_prop_callbacks! {
-        BunObject_lazyPropCb_Archive => super::get_archive_constructor,
         BunObject_lazyPropCb_CryptoHasher => Crypto::CryptoHasher::getter,
         // BunObject_lazyPropCb_CSRF => super::get_csrf_object,
         BunObject_lazyPropCb_FFI => crate::ffi::ffi_object_draft::getter,
@@ -1712,10 +1709,6 @@ fn get_xml_object(global_this: &JSGlobalObject, _: &JSObject) -> JSValue {
 
 fn get_yaml_object(global_this: &JSGlobalObject, _: &JSObject) -> JSValue {
     YAMLObject::create(global_this)
-}
-
-fn get_archive_constructor(global_this: &JSGlobalObject, _: &JSObject) -> JSValue {
-    jsc::codegen::js::get_constructor::<crate::api::archive::Archive>(global_this)
 }
 
 fn get_glob_constructor(global_this: &JSGlobalObject, _: &JSObject) -> JSValue {

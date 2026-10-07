@@ -298,21 +298,6 @@ impl TimerHeap {
         let r = unsafe { self.0.delete_min() };
         if r.is_null() { None } else { Some(r) }
     }
-
-    #[inline]
-    pub(crate) fn find_max(&self) -> Option<*mut EventLoopTimer> {
-        // SAFETY: all reachable nodes were inserted via `insert()` and remain
-        // live for the heap's lifetime (intrusive invariant maintained by `All`).
-        let r = unsafe { self.0.find_max() };
-        if r.is_null() { None } else { Some(r) }
-    }
-
-    #[inline]
-    pub(crate) fn count(&self) -> usize {
-        // SAFETY: all reachable nodes were inserted via `insert()` and remain
-        // live for the heap's lifetime (intrusive invariant maintained by `All`).
-        unsafe { self.0.count() }
-    }
 }
 
 /// i32 is exposed to JavaScript and can be used with clearTimeout, clearInterval, etc.
@@ -336,12 +321,6 @@ impl Maps {
     }
 }
 
-// ─── FakeTimers ──────────────────────────────────────────────────────────────
-// Real definition lives in `runtime/test_runner/timers/FakeTimers.rs` and
-// depends on `TimerHeap` (defined above). Now that `pub mod test_runner` is
-// declared in lib.rs, re-export so `All.fake_timers` and the test_runner
-// host fns see the same nominal type.
-pub(crate) use crate::test_runner::timers::fake_timers::FakeTimers;
 
 // ─── DateHeaderTimer / EventLoopDelayMonitor (struct-only) ───────────────────
 // Method bodies (`enable`/`run`) call `vm.timer.*` and `vm.uws_loop()` which
@@ -599,7 +578,6 @@ pub(crate) struct All {
     #[cfg(windows)]
     pub(crate) uv_idle: bun_sys::windows::libuv::uv_idle_t,
     pub(crate) event_loop_delay: EventLoopDelayMonitor,
-    pub(crate) fake_timers: FakeTimers,
     pub(crate) maps: Maps,
     pub(crate) date_header_timer: DateHeaderTimer,
     pub(crate) wtf_timers: Guarded<TimerHeap>,
@@ -621,7 +599,6 @@ impl All {
             #[cfg(windows)]
             uv_idle: bun_core::ffi::zeroed(),
             event_loop_delay: EventLoopDelayMonitor::default(),
-            fake_timers: FakeTimers::default(),
             maps: Maps::default(),
             date_header_timer: DateHeaderTimer::default(),
             wtf_timers: Guarded::init(TimerHeap::default()),
@@ -653,14 +630,7 @@ impl All {
             unsafe { (*flags.as_ptr()).set_epoch(self.epoch) };
         }
 
-        if self.fake_timers.is_active() && tag.allow_fake_timers() {
-            // SAFETY: see fn contract
-            unsafe {
-                self.fake_timers.timers.insert(timer);
-                (*timer).state = EventLoopTimerState::ACTIVE;
-                (*timer).in_heap = InHeap::Fake;
-            }
-        } else {
+        {
             // SAFETY: see fn contract
             unsafe {
                 self.timers.insert(timer);
@@ -802,8 +772,6 @@ impl All {
             }
             // SAFETY: timer is in `self.timers` per `in_heap`
             InHeap::Regular => unsafe { self.timers.remove(timer) },
-            // SAFETY: timer is in `self.fake_timers.timers` per `in_heap`
-            InHeap::Fake => unsafe { self.fake_timers.timers.remove(timer) },
         }
         // SAFETY: `timer` is still a valid live EventLoopTimer.
         unsafe {
@@ -1190,7 +1158,7 @@ impl All {
         let mut nodes: Vec<*mut EventLoopTimer> = Vec::new();
         let mut stack: Vec<*mut EventLoopTimer> = Vec::new();
         // SAFETY: fn contract.
-        let roots = unsafe { [(*this).timers.0.root, (*this).fake_timers.timers.0.root] };
+        let roots = unsafe { [(*this).timers.0.root] };
         for root in roots {
             if !root.is_null() {
                 stack.push(root);
@@ -1216,7 +1184,6 @@ impl All {
 
     /// VM-teardown / `--isolate` file-swap pass: `cancel()` every
     /// `TimeoutObject` / `ImmediateObject` still linked in `timers` /
-    /// `fake_timers.timers` so the in-heap `+1` ref and the JS pin
     /// (`this_value` Strong) are released before the GC sweep, and discard
     /// every `AbortSignal.timeout()` timer through its signal so the signal
     /// stops reporting an active timer.
@@ -1237,7 +1204,7 @@ impl All {
         let mut stack: Vec<*mut EventLoopTimer> = Vec::new();
 
         // SAFETY: `this` is the live per-thread `All` (JS thread only).
-        let roots = unsafe { [(*this).timers.0.root, (*this).fake_timers.timers.0.root] };
+        let roots = unsafe { [(*this).timers.0.root] };
         for root in roots {
             if !root.is_null() {
                 stack.push(root);

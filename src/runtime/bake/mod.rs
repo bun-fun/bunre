@@ -26,9 +26,6 @@ pub(crate) use dev_server_body::is_allowed_host_header;
 #[path = "FrameworkRouter.rs"]
 pub(crate) mod framework_router_body;
 
-#[path = "production.rs"]
-mod production_body;
-
 // `Bun__add{Bake,DevServer}SourceProvider*` host exports — the Rust side of
 // `BakeSourceProvider.h` / `DevServerSourceProvider.h`. Reached only via the
 // codegen-emitted `extern "C"` thunks in `generated_host_exports.rs`.
@@ -36,7 +33,7 @@ pub mod source_provider_exports;
 
 // Re-exports from the submodule bodies so `production.rs` can name them
 // without going through the keystone stubs below.
-pub use bake_body::{PatternBuffer, UserOptions, print_warning};
+pub use bake_body::{UserOptions, print_warning};
 
 /// All bake JSC references go through this re-export of `bun_jsc`.
 pub mod jsc {
@@ -621,9 +618,6 @@ pub mod framework_router {
 // ══════════════════════════════════════════════════════════════════════════
 // production
 // ══════════════════════════════════════════════════════════════════════════
-pub mod production {
-    pub use super::production_body::{PerThread, build_command};
-}
 
 // ══════════════════════════════════════════════════════════════════════════
 // DevServer

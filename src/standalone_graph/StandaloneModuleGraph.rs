@@ -2246,167 +2246,18 @@ pub(crate) fn inject<'a>(
 use bun_core::Environment::OperatingSystem as CompileTargetOs;
 pub use bun_options_types::compile_target::CompileTarget;
 
-/// Moved up from `bun_options_types` (T3) so it can name
-/// `bun_http::AsyncHTTP` directly
-/// instead of routing through `extern "Rust"` shims; the only callers are the
-/// two `download*` fns below in this crate.
+/// Downloads the bun executable for a foreign `--compile` target.
+///
+/// bunre has no tar extractor (libarchive shipped with the install tier), so
+/// cross-target `--compile` cannot fetch the platform's bun at runtime: pass
+/// `--compile-executable` (or build for the host target) instead.
 pub(crate) fn download_to_path(
-    target: &CompileTarget,
-    env: &mut bun_dotenv::Loader,
-    dest_z: &ZStr,
+    _target: &CompileTarget,
+    _env: &mut bun_dotenv::Loader,
+    _dest_z: &ZStr,
 ) -> crate::Result<()> {
-    bun_http::http_thread::init(&Default::default());
-    let mut refresher = bun_core::Progress::Progress::default();
-
-    {
-        refresher.refresh();
-
-        // TODO: This is way too much code necessary to send a single HTTP request...
-        let mut compressed_archive_bytes =
-            Box::new(bun_core::MutableString::init(24 * 1024 * 1024)?);
-        let mut url_buffer = [0u8; 2048];
-        let url_str = match target.to_npm_registry_url(&mut url_buffer) {
-            Ok(s) => s,
-            Err(err) => {
-                // Return error without printing - let caller decide how to handle
-                return Err(err.into());
-            }
-        };
-        let url_str_copy: Box<[u8]> = Box::from(url_str);
-        let url = bun_url::URL::parse(&url_str_copy);
-        {
-            // The unconditional
-            // `progress.end()` below is sufficient: no fallible call sits between
-            // `refresher.start` and it, so every exit path (including the
-            // error returns after it) ends the node exactly once.
-            // Note: reshaped for borrowck — `get_http_proxy_for` borrows
-            // `env` for the proxy URL lifetime; read the bool first.
-            let reject_unauthorized = env.get_tls_reject_unauthorized();
-            let http_proxy: Option<bun_url::URL<'_>> = env.get_http_proxy_for(&url);
-            let progress = refresher.start(b"Downloading", 0);
-
-            let mut async_http = Box::new(bun_http::AsyncHTTP::init_sync(
-                bun_http::Method::GET,
-                url,
-                Default::default(),
-                b"",
-                b"",
-                http_proxy,
-                bun_http::FetchRedirect::Follow,
-            ));
-            async_http.client.progress_node =
-                core::ptr::NonNull::new(core::ptr::from_mut(progress));
-            async_http.client.flags.reject_unauthorized = reject_unauthorized;
-            let send_result = async_http.send_sync(&mut compressed_archive_bytes);
-
-            progress.end();
-            let status_code = send_result?.status_code() as u16;
-
-            match status_code {
-                404 => {
-                    // Return error without printing - let caller handle the messaging
-                    return Err(crate::Error::TargetNotFound);
-                }
-                403 | 429 | 499..=599 => {
-                    // Return error without printing - let caller handle the messaging
-                    return Err(crate::Error::NetworkError);
-                }
-                200 => {}
-                _ => return Err(crate::Error::NetworkError),
-            }
-        }
-
-        let mut tarball_bytes: Vec<u8> = Vec::new();
-        {
-            refresher.refresh();
-
-            if compressed_archive_bytes.list.is_empty() {
-                // Return error without printing - let caller handle the messaging
-                return Err(crate::Error::InvalidResponse);
-            }
-
-            {
-                // Note: reshaped for borrowck — `refresher.start` borrows
-                // `refresher` mutably; do gunzip work first, drive progress around it.
-                refresher.start(b"Decompressing", 0);
-                let gunzip_result = (|| -> crate::Result<()> {
-                    let mut gunzip = bun_zlib::ZlibReaderArrayList::init(
-                        compressed_archive_bytes.list.as_slice(),
-                        &mut tarball_bytes,
-                    )
-                    .map_err(|_| crate::Error::InvalidResponse)?;
-                    gunzip
-                        .read_all(true)
-                        .map_err(|_| crate::Error::InvalidResponse)?;
-                    Ok(())
-                })();
-                refresher.root.end();
-                gunzip_result?;
-            }
-            refresher.refresh();
-
-            {
-                refresher.start(b"Extracting", 0);
-
-                let mut tmpname_buf = [0u8; 1024];
-                let tempdir_name: &ZStr =
-                    bun_fs::FileSystem::tmpname(b"tmp", &mut tmpname_buf, bun_core::fast_random())?;
-                let tmpdir = bun_sys::Dir::cwd()
-                    .make_open_path(tempdir_name.as_bytes(), Default::default())?;
-                scopeguard::defer! {
-                    let _ = bun_sys::Dir::cwd().delete_tree(tempdir_name.as_bytes());
-                }
-                let extract_res = bun_libarchive::Archiver::extract_to_dir(
-                    tarball_bytes.as_slice(),
-                    tmpdir.fd(),
-                    None,
-                    &mut (),
-                    bun_libarchive::ExtractOptions {
-                        // "package/bin"
-                        depth_to_skip: 2,
-                        ..Default::default()
-                    },
-                );
-                if extract_res.is_err() {
-                    refresher.root.end();
-                    // Return error without printing - let caller handle the messaging
-                    return Err(crate::Error::ExtractionFailed);
-                }
-
-                let mut did_retry = false;
-                loop {
-                    let src_name: &ZStr = if target.os == CompileTargetOs::Windows {
-                        bun_core::zstr!("bun.exe")
-                    } else {
-                        bun_core::zstr!("bun")
-                    };
-                    let mv = bun_sys::move_file_z(tmpdir.fd(), src_name, Fd::INVALID, dest_z);
-                    if mv.is_err() {
-                        if !did_retry {
-                            did_retry = true;
-                            let dirname = path::dirname_simple(dest_z.as_bytes());
-                            if !dirname.is_empty() {
-                                let _ = bun_sys::Dir::cwd().make_path(dirname);
-                                continue;
-                            }
-
-                            // fallthrough, failed for another reason
-                        }
-                        refresher.root.end();
-                        // Return error without printing - let caller handle the messaging
-                        return Err(crate::Error::ExtractionFailed);
-                    }
-                    break;
-                }
-                tmpdir.close();
-                refresher.root.end();
-            }
-            refresher.refresh();
-        }
-    }
-    Ok(())
+    Err(crate::Error::TargetNotFound)
 }
-
 /// The bun executable a `--compile` build for `target` injects into: `self_exe_path` if given, this process for the
 /// host target, otherwise the cached download of that platform's bun at this version (fetched now if missing).
 pub fn target_executable(

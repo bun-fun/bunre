@@ -17,8 +17,6 @@ pub enum HardcodedModule {
     BunJsc,
     #[strum(serialize = "bun:main")]
     BunMain,
-    #[strum(serialize = "bun:test")]
-    BunTest,
     #[strum(serialize = "bun:wrap")]
     BunWrap,
     #[strum(serialize = "bun:sqlite")]
@@ -211,7 +209,6 @@ bun_core::comptime_string_map! {
         b"bun:ffi" => HardcodedModule::BunFfi,
         b"bun:jsc" => HardcodedModule::BunJsc,
         b"bun:main" => HardcodedModule::BunMain,
-        b"bun:test" => HardcodedModule::BunTest,
         b"bun:sqlite" => HardcodedModule::BunSqlite,
         b"bun:wrap" => HardcodedModule::BunWrap,
         b"bun:internal-for-testing" => HardcodedModule::BunInternalForTesting,
@@ -709,7 +706,6 @@ const BUN_EXTRA_ALIAS_KVS: &[AliasKv] = &[
             node_only_prefix: false,
         },
     ),
-    entry!("bun:test"),
     entry!("bun:app"),
     entry!("bun:ffi"),
     entry!("bun:jsc"),
@@ -802,37 +798,11 @@ const BUN_EXTRA_ALIAS_KVS: &[AliasKv] = &[
     ),
 ];
 
-const BUN_TEST_EXTRA_ALIAS_KVS: &[AliasKv] = &[
-    (
-        b"@jest/globals",
-        Alias {
-            path: zstr!("bun:test"),
-            tag: import_record::Tag::Builtin,
-            node_builtin: false,
-            node_only_prefix: false,
-        },
-    ),
-    (
-        b"vitest",
-        Alias {
-            path: zstr!("bun:test"),
-            tag: import_record::Tag::Builtin,
-            node_builtin: false,
-            node_only_prefix: false,
-        },
-    ),
-];
-
 // A lazily-built `HashMap` per alias table (see `lookup`); the const
 // slice-of-tables form is kept public because `ModuleLoader` iterates the raw
 // entries.
 const NODE_ALIASES: &[&[AliasKv]] = &[COMMON_ALIAS_KVS];
 pub const BUN_ALIASES: &[&[AliasKv]] = &[COMMON_ALIAS_KVS, BUN_EXTRA_ALIAS_KVS];
-const BUN_TEST_ALIASES: &[&[AliasKv]] = &[
-    COMMON_ALIAS_KVS,
-    BUN_EXTRA_ALIAS_KVS,
-    BUN_TEST_EXTRA_ALIAS_KVS,
-];
 
 static EXPOSE_INTERNALS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -899,8 +869,6 @@ static NODE_ALIAS_MAP: std::sync::LazyLock<bun_collections::HashMap<&'static [u8
     std::sync::LazyLock::new(|| build_alias_map(NODE_ALIASES));
 static BUN_ALIAS_MAP: std::sync::LazyLock<bun_collections::HashMap<&'static [u8], Alias>> =
     std::sync::LazyLock::new(|| build_alias_map(BUN_ALIASES));
-static BUN_TEST_ALIAS_MAP: std::sync::LazyLock<bun_collections::HashMap<&'static [u8], Alias>> =
-    std::sync::LazyLock::new(|| build_alias_map(BUN_TEST_ALIASES));
 
 #[inline]
 fn lookup(
@@ -912,6 +880,8 @@ fn lookup(
 
 #[derive(Copy, Clone, Default)]
 pub struct Cfg {
+    /// Always `false` in bunre: the `bun:test` module and its jest
+    /// specifier rewrites are gone, so there is no second alias table.
     pub rewrite_jest_for_tests: bool,
 }
 
@@ -920,7 +890,7 @@ impl Alias {
         Self::get(name, target, cfg).is_some()
     }
 
-    pub fn get(name: &[u8], target: Target, cfg: Cfg) -> Option<Alias> {
+    pub fn get(name: &[u8], target: Target, _cfg: Cfg) -> Option<Alias> {
         // Without `--experimental-stream-iter` the aliases stay invisible so
         // the bare specifier falls through to filesystem resolution
         // ("Cannot find module") and the node:-prefixed one reports
@@ -929,11 +899,7 @@ impl Alias {
             return None;
         }
         if target.is_bun() {
-            if cfg.rewrite_jest_for_tests {
-                return lookup(&BUN_TEST_ALIAS_MAP, name);
-            } else {
-                return lookup(&BUN_ALIAS_MAP, name);
-            }
+            return lookup(&BUN_ALIAS_MAP, name);
         } else if target.is_node() {
             return lookup(&NODE_ALIAS_MAP, name);
         }

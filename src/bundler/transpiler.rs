@@ -383,15 +383,6 @@ impl<'a> Transpiler<'a> {
         self.macro_context = Some(js_ast::Macro::MacroContext::init(self));
     }
 
-    /// Returns the resolver's auto-install package-manager handle. Errs when
-    /// the one-time init fails (e.g. unreadable top-level directory).
-    #[inline]
-    pub fn get_package_manager(
-        &mut self,
-    ) -> crate::Result<*mut dyn bun_resolver::install_types::AutoInstaller> {
-        self.resolver.get_package_manager().map_err(Into::into)
-    }
-
     /// Reset the thread-local AST block stores (`Expr`/`Stmt`) and the side
     /// `AstAlloc` arena.
     pub(crate) fn reset_store(&self) {

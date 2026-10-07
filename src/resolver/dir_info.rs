@@ -208,15 +208,6 @@ impl DirInfo {
         self.package_json.map(arena_ref)
     }
 
-    /// Read-only view of `package_json_for_dependencies`. The field stores
-    /// `NonNull` to preserve mut-provenance for the write in
-    /// `enqueue_dependency_to_resolve`;
-    /// callers that only read go through here.
-    #[inline]
-    pub(crate) fn package_json_for_dependencies(&self) -> Option<&'static PackageJSON> {
-        self.package_json_for_dependencies.map(arena_ref)
-    }
-
     /// Read-only view of `tsconfig_json`. See `package_json()`.
     #[inline]
     pub fn tsconfig_json(&self) -> Option<&'static TSConfigJSON> {

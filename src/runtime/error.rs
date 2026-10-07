@@ -254,8 +254,6 @@ pub enum Error {
     #[error(transparent)]
     Spawn(#[from] bun_spawn::Error),
     #[error(transparent)]
-    Install(#[from] bun_install::Error),
-    #[error(transparent)]
     Resolver(#[from] bun_resolver::Error),
     #[error(transparent)]
     Paths(#[from] bun_paths::Error),
@@ -310,16 +308,6 @@ impl From<bun_uws::ssl_wrapper::InitError> for Error {
     }
 }
 
-impl From<bun_libarchive::Error> for Error {
-    fn from(e: bun_libarchive::Error) -> Self {
-        match e {
-            bun_libarchive::Error::Sys(s) => Self::Sys(s),
-            bun_libarchive::Error::Alloc(a) => Self::Alloc(a),
-            _ => Self::Unexpected,
-        }
-    }
-}
-
 impl From<Error> for bun_bundler::Error {
     fn from(e: Error) -> Self {
         match e {
@@ -367,7 +355,6 @@ impl From<Error> for bun_jsc::CrateError {
             Error::Core(c) => Self::Core(c),
             Error::Resolver(r) => Self::Resolver(r),
             Error::Bundler(b) => Self::Bundler(b),
-            Error::Install(i) => Self::Install(i),
             Error::Jsc(j) => j,
             Error::JSError | Error::Js(_) => Self::JSError,
             _ => Self::Core(bun_core::Error::Unexpected),
@@ -518,7 +505,6 @@ impl Error {
             Self::Jsc(e) => e.name(),
             Self::Bundler(e) => e.name(),
             Self::Spawn(e) => e.name(),
-            Self::Install(e) => e.name(),
             Self::Resolver(e) => e.name(),
             Self::Paths(e) => e.name(),
             Self::Parsers(e) => e.name(),

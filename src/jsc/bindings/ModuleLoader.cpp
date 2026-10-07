@@ -655,51 +655,6 @@ JSValue fetchCommonJSModule(
 
     bool wasModuleMock = false;
 
-    // When "bun test" is enabled, allow users to override builtin modules
-    // This is important for being able to trivially mock things like the filesystem.
-    if (isBunTest) {
-        JSC::JSValue virtualModuleResult = Bun::runVirtualModule(globalObject, &specifier, wasModuleMock);
-        RETURN_IF_EXCEPTION(scope, {});
-        if (virtualModuleResult) {
-            JSValue promiseOrCommonJSModule = handleVirtualModuleResult<true>(globalObject, virtualModuleResult, res, &specifier, referrer, wasModuleMock, target);
-            RETURN_IF_EXCEPTION(scope, {});
-
-            // If we assigned module.exports to the virtual module, we're done here.
-            if (promiseOrCommonJSModule == target) {
-                RELEASE_AND_RETURN(scope, target);
-            }
-            JSPromise* promise = uncheckedDowncast<JSPromise>(promiseOrCommonJSModule);
-            switch (promise->status()) {
-            case JSPromise::Status::Rejected: {
-                promise->markAsHandled();
-                JSC::throwException(globalObject, scope, promise->result());
-                RELEASE_AND_RETURN(scope, JSValue {});
-            }
-            case JSPromise::Status::Pending: {
-                JSC::throwTypeError(globalObject, scope, makeString("require() async module \""_s, specifierWtfString, "\" is unsupported. use \"await import()\" instead."_s));
-                RELEASE_AND_RETURN(scope, JSValue {});
-            }
-            case JSPromise::Status::Fulfilled: {
-                if (!res->success) {
-                    throwException(scope, res->result.err, globalObject);
-                    RELEASE_AND_RETURN(scope, {});
-                }
-                if (!wasModuleMock) {
-                    auto* jsSourceCode = uncheckedDowncast<JSSourceCode>(promise->result());
-                    JSC::VM::SynchronousModuleQueue queue;
-                    queue.prev = vm.m_synchronousModuleQueue;
-                    vm.m_synchronousModuleQueue = &queue;
-                    globalObject->moduleLoader()->provideFetch(globalObject, JSC::Identifier::fromString(vm, specifierWtfString), JSC::ScriptFetchParameters::Type::JavaScript, jsSourceCode);
-                    if (!scope.exception()) JSC::JSModuleLoader::drainSynchronousModuleQueue(globalObject);
-                    vm.m_synchronousModuleQueue = queue.prev;
-                    RETURN_IF_EXCEPTION(scope, {});
-                }
-                RELEASE_AND_RETURN(scope, jsNumber(-1));
-            }
-            }
-        }
-    }
-
     auto builtin = fetchBuiltinModuleWithoutResolution(globalObject, &specifier, res);
     RETURN_IF_EXCEPTION(scope, {});
     switch (builtin.kind) {
@@ -725,8 +680,8 @@ JSValue fetchCommonJSModule(
         break;
     }
 
-    // When "bun test" is NOT enabled, disable users from overriding builtin modules
-    if (!isBunTest) {
+    // Users cannot override builtin modules outside the test runner.
+    {
         JSC::JSValue virtualModuleResult = Bun::runVirtualModule(globalObject, &specifier, wasModuleMock);
         RETURN_IF_EXCEPTION(scope, {});
         if (virtualModuleResult) {
@@ -926,7 +881,6 @@ template JSValue fetchCommonJSModuleNonBuiltin<false>(
     BunLoaderType forceLoaderType,
     JSC::ThrowScope& scope);
 
-extern "C" bool isBunTest;
 
 template<bool allowPromise>
 static JSValue fetchESMSourceCode(
@@ -971,16 +925,6 @@ static JSValue fetchESMSourceCode(
     };
 
     bool wasModuleMock = false;
-
-    // When "bun test" is enabled, allow users to override builtin modules
-    // This is important for being able to trivially mock things like the filesystem.
-    if (isBunTest) {
-        JSC::JSValue virtualModuleResult = Bun::runVirtualModule(globalObject, specifier, wasModuleMock);
-        RETURN_IF_EXCEPTION(scope, {});
-        if (virtualModuleResult) {
-            RELEASE_AND_RETURN(scope, handleVirtualModuleResult<allowPromise>(globalObject, virtualModuleResult, res, specifier, referrer, wasModuleMock));
-        }
-    }
 
     if (Bun__fetchBuiltinModule(bunVM, globalObject, specifier, res)) {
         ASSERT(res->success);
@@ -1070,8 +1014,8 @@ static JSValue fetchESMSourceCode(
         }
     }
 
-    // When "bun test" is NOT enabled, disable users from overriding builtin modules
-    if (!isBunTest) {
+    // Users cannot override builtin modules outside the test runner.
+    {
         JSC::JSValue virtualModuleResult = Bun::runVirtualModule(globalObject, specifier, wasModuleMock);
         RETURN_IF_EXCEPTION(scope, {});
         if (virtualModuleResult) {

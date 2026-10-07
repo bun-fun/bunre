@@ -22,7 +22,6 @@ namespace Zig {
 
 class GlobalObject;
 
-JSC::SourceID sourceIDForSourceURL(const WTF::String& sourceURL);
 JSC::SourceOrigin toSourceOrigin(const String& sourceURL, bool isBuiltin);
 class SourceProvider final : public JSC::SourceProvider {
     WTF_DEPRECATED_MAKE_FAST_ALLOCATED(SourceProvider);

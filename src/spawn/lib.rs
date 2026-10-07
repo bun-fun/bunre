@@ -66,18 +66,13 @@ pub use process::{
     spawn_process, spawn_process_cstr,
 };
 
-// Variant types live in `bun_runtime`/`bun_install`; each provides its body
+// Variant types live in `bun_runtime`; each provides its body
 // via `bun_spawn::link_impl_ProcessExit!`. Adding a handler kind = add a
 // variant here + one `link_impl_ProcessExit!` in the owning crate.
 bun_dispatch::link_interface! {
     pub ProcessExit[
         Subprocess,
-        LifecycleScript,
-        InstallGit,
-        SecurityScan,
         Shell,
-        FilterRunHandle,
-        MultiRunHandle,
         CronRegister,
         CronRemove,
         ChromeProcess,
@@ -141,12 +136,11 @@ pub mod sync {
 // `bun.jsc.Subprocess` cross-tier shapes — `Source`, `StdioResult`,
 // `StaticPipeWriter<P>`.
 //
-// MOVE_DOWN from `bun_runtime::api::bun::subprocess`: `bun_install::
-// security_scanner` constructs a `StaticPipeWriter<SecurityScanSubprocess>` to
-// stream a JSON blob to the scanner's stdin. The `Source` enum here carries a
-// `Box<dyn SourceData>` arm (§Dispatch cold path — vtable travels with the
-// value) so the JSC tier can wrap `Blob`/`ArrayBuffer` payloads without this
-// crate naming `bun_jsc`/`bun_runtime`.
+// MOVE_DOWN from `bun_runtime::api::bun::subprocess`: a subprocess that streams
+// a payload to its stdin constructs a `StaticPipeWriter<P>` to do it. The
+// `Source` enum here carries a `Box<dyn SourceData>` arm (§Dispatch cold path —
+// vtable travels with the value) so the JSC tier can wrap `Blob`/`ArrayBuffer`
+// payloads without this crate naming `bun_jsc`/`bun_runtime`.
 // ──────────────────────────────────────────────────────────────────────────
 pub mod subprocess {
     #[cfg(not(windows))]

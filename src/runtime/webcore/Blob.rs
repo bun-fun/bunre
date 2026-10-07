@@ -3538,7 +3538,6 @@ impl BlobExt for Blob {
 // JSC-integration methods (host fns, to_js/from_js, S3/file I/O state machines)
 // ──────────────────────────────────────────────────────────────────────────
 
-use crate::api::archive::Archive;
 use crate::image::Image;
 use crate::node;
 use crate::webcore::s3::client as s3_client;
@@ -5063,11 +5062,6 @@ pub(crate) fn write_file_internal(
                 core::ops::ControlFlow::Break(v) => return Ok(v),
                 core::ops::ControlFlow::Continue(b) => break 'brk b,
             }
-        }
-
-        // Check for Archive - allows Bun.write() and S3 writes to accept Archive instances
-        if let Some(archive) = data.as_class_ref::<Archive>() {
-            break 'brk Blob::init_with_store(archive.store_ref().clone(), global_this);
         }
 
         if let Some(readable) = ReadableStream::from_js_direct(data) {

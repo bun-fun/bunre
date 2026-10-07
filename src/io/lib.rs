@@ -484,7 +484,7 @@ pub use max_buf as MaxBuf;
 pub use pipes::{Chunk, FileType, ReadState};
 
 // `BufferedReader` parent callback dispatch. Each variant's `link_impl_*!` (in
-// `bun_runtime`/`bun_install`) forwards to that type's `BufferedReaderParent`
+// `bun_runtime`) forwards to that type's `BufferedReaderParent`
 // trait impl — see `buffered_reader_parent_link!` below.
 bun_dispatch::link_interface! {
     pub BufferedReaderParentLink[
@@ -496,11 +496,6 @@ bun_dispatch::link_interface! {
         Terminal,
         CronRegister,
         CronRemove,
-        FilterRunHandle,
-        MultiRunPipeReader,
-        LifecycleScript,
-        InstallGit,
-        SecurityScan,
     ] {
         fn has_on_read_chunk() -> bool;
         fn on_read_chunk(chunk: pipes::Chunk<'_>, has_more: pipes::ReadState) -> bool;

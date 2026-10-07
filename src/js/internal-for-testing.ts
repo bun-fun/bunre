@@ -102,11 +102,6 @@ export const subprocessInternals = {
   ) => boolean,
 };
 
-export const iniInternals = {
-  parse: $newRustFunction("ini.rs", "IniTestingAPIs.parse", 1),
-  loadNpmrc: $newRustFunction("ini.rs", "IniTestingAPIs.loadNpmrcFromJS", 2),
-};
-
 export const cssInternals = {
   minifyTestWithOptions: $newRustFunction("css_internals.rs", "minifyTestWithOptions", 3),
   minifyErrorTestWithOptions: $newRustFunction("css_internals.rs", "minifyErrorTestWithOptions", 3),
@@ -128,13 +123,6 @@ export const crash_handler = $rust("crash_handler.rs", "js_bindings.generate") a
   fastfail: () => void;
   trap: () => void;
   raiseIgnoringPanicHandler: () => void;
-};
-
-export const install_test_helpers = $rust("install_binding.rs", "bun_install_js_bindings.generate") as {
-  /**
-   * Returns the lockfile at the given path as an object.
-   */
-  parseLockfile: (cwd: string) => any;
 };
 
 export const jscInternals = $cpp("JSCTestingHelpers.cpp", "createJSCTestingHelpers");
@@ -171,25 +159,6 @@ export const setSyntheticAllocationLimitForTesting: (limit: number) => number = 
 export const setMaxMarkdownBlockBytesForTesting: (limit: number) => number = $newRustFunction(
   "MarkdownObject.rs",
   "setMaxMarkdownBlockBytesForTesting",
-  1,
-);
-
-export const npm_manifest_test_helpers = $rust("npm.rs", "PackageManifest.bindings.generate") as {
-  /**
-   * Returns the parsed manifest file. Currently only returns an array of available versions.
-   */
-  parseManifest: (manifestFileName: string, registryUrl: string) => any;
-};
-
-export const isArchitectureMatch: (architecture: string[]) => boolean = $newRustFunction(
-  "npm.rs",
-  "Architecture.jsFunctionArchitectureIsMatch",
-  1,
-);
-
-export const isOperatingSystemMatch: (operatingSystem: string[]) => boolean = $newRustFunction(
-  "npm.rs",
-  "OperatingSystem.jsFunctionOperatingSystemIsMatch",
   1,
 );
 
@@ -712,11 +681,6 @@ export const getEventLoopStats: () => {
   /** usockets/libuv loop iterations so far (us_internal_loop_pre count). */
   iteration: number;
 } = $newRustFunction("event_loop.rs", "getActiveTasks", 0);
-
-export const hostedGitInfo = {
-  parseUrl: $newRustFunction("hosted_git_info.rs", "TestingAPIs.jsParseUrl", 1),
-  fromUrl: $newRustFunction("hosted_git_info.rs", "TestingAPIs.jsFromUrl", 1),
-};
 
 export const translateUVErrorToE: (code: number) => string | undefined = $newRustFunction(
   "sys.rs",

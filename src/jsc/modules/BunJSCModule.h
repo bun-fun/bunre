@@ -902,57 +902,6 @@ JSC_DEFINE_HOST_FUNCTION(functionDeserialize, (JSGlobalObject * globalObject, Ca
     RELEASE_AND_RETURN(throwScope, JSValue::encode(result));
 }
 
-extern "C" JSC::EncodedJSValue ByteRangeMapping__findExecutedLines(
-    JSC::JSGlobalObject*, const BunString* sourceURL, BasicBlockRange* ranges,
-    size_t len, size_t functionOffset, bool ignoreSourceMap);
-
-JSC_DEFINE_HOST_FUNCTION(functionCodeCoverageForFile,
-    (JSGlobalObject * globalObject,
-        CallFrame* callFrame))
-{
-    VM& vm = globalObject->vm();
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-
-    String fileName = callFrame->argument(0).toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(throwScope, {});
-    bool ignoreSourceMap = callFrame->argument(1).toBoolean(globalObject);
-
-    auto sourceID = Zig::sourceIDForSourceURL(fileName);
-    if (!sourceID) {
-        throwException(globalObject, throwScope,
-            createError(globalObject, "No source for file"_s));
-        return {};
-    }
-
-    auto basicBlocks = vm.controlFlowProfiler()->getBasicBlocksForSourceIDWithoutFunctionRange(
-        sourceID, vm);
-
-    if (basicBlocks.isEmpty()) {
-        RELEASE_AND_RETURN(throwScope, JSC::JSValue::encode(JSC::constructEmptyArray(globalObject, nullptr, 0)));
-    }
-
-    size_t functionStartOffset = basicBlocks.size();
-
-    const Vector<std::tuple<bool, unsigned, unsigned>>& functionRanges = vm.functionHasExecutedCache()->getFunctionRanges(sourceID);
-
-    basicBlocks.reserveCapacity(functionRanges.size() + basicBlocks.size());
-
-    for (const auto& functionRange : functionRanges) {
-        BasicBlockRange range;
-        range.m_hasExecuted = std::get<0>(functionRange);
-        range.m_startOffset = static_cast<int>(std::get<1>(functionRange));
-        range.m_endOffset = static_cast<int>(std::get<2>(functionRange));
-        range.m_executionCount = range.m_hasExecuted
-            ? 1
-            : 0; // This is a hack. We don't actually count this.
-        basicBlocks.append(range);
-    }
-
-    BunString fileNameBunString = Bun::toString(fileName);
-    return ByteRangeMapping__findExecutedLines(
-        globalObject, &fileNameBunString, basicBlocks.begin(),
-        basicBlocks.size(), functionStartOffset, ignoreSourceMap);
-}
 
 JSC_DEFINE_HOST_FUNCTION(functionEstimateDirectMemoryUsageOf, (JSGlobalObject * globalObject, CallFrame* callFrame))
 {
@@ -1004,7 +953,6 @@ DEFINE_NATIVE_MODULE(BunJSC)
     putNativeFn(Identifier::fromString(vm, "getProtectedObjects"_s), functionGetProtectedObjects);
     putNativeFn(Identifier::fromString(vm, "generateHeapSnapshotForDebugging"_s), functionGenerateHeapSnapshotForDebugging);
     putNativeFn(Identifier::fromString(vm, "profile"_s), functionRunProfiler);
-    putNativeFn(Identifier::fromString(vm, "codeCoverageForFile"_s), functionCodeCoverageForFile);
     putNativeFn(Identifier::fromString(vm, "setTimeZone"_s), functionSetTimeZone);
     putNativeFn(Identifier::fromString(vm, "serialize"_s), functionSerialize);
     putNativeFn(Identifier::fromString(vm, "deserialize"_s), functionDeserialize);

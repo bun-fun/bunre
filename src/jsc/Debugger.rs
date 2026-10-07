@@ -15,11 +15,10 @@ use bun_core::String as BunString;
 use bun_io::KeepAlive;
 use bun_io::posix_event_loop::{AllocatorType, get_vm_ctx};
 
-use crate::virtual_machine::{VirtualMachine, runtime_hooks};
-use crate::{self as jsc, CallFrame, JSGlobalObject, ZigException};
+use crate::virtual_machine::VirtualMachine;
+use crate::{self as jsc, JSGlobalObject, ZigException};
 
 bun_core::declare_scope!(debugger, visible);
-bun_core::declare_scope!(TestReporterAgent, visible);
 bun_core::declare_scope!(LifecycleAgent, visible);
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -125,7 +124,6 @@ pub struct Debugger {
     pub mode: Mode,
     pub protocol: Protocol,
 
-    pub test_reporter_agent: TestReporterAgent,
     pub lifecycle_reporter_agent: LifecycleAgent,
     /// Reached through a shared `&Debugger` borrow; the slot's `Cell` fields
     /// provide the interior mutability. JS-thread only.
@@ -146,7 +144,6 @@ impl Default for Debugger {
             set_breakpoint_on_first_line: false,
             mode: Mode::Listen,
             protocol: Protocol::Jsc,
-            test_reporter_agent: TestReporterAgent::default(),
             lifecycle_reporter_agent: LifecycleAgent::default(),
             extension_agent: ErasedAgentSlot::default(),
             http_server_agent: HTTPServerAgent::default(),
@@ -766,194 +763,6 @@ pub fn did_dispatch_async_call(global_object: &JSGlobalObject, call: AsyncCallTy
 pub fn will_dispatch_async_call(global_object: &JSGlobalObject, call: AsyncCallType, id: u64) {
     jsc::mark_binding();
     Debugger__willDispatchAsyncCall(global_object, call, id);
-}
-
-// ─── TestReporterAgent ────────────────────────────────────────────────────
-
-#[derive(Default)]
-pub struct TestReporterAgent {
-    pub(crate) handle: *mut TestReporterHandle,
-    /// Shared `describe`/`test` ID counter for both the live
-    /// (`ScopeFunctions::call`) and retroactive reporting paths.
-    pub next_test_id: i32,
-}
-
-/// this enum is kept in sync with c++ InspectorTestReporterAgent.cpp `enum class BunTestStatus`
-#[repr(u8)]
-#[derive(Copy, Clone, Eq, PartialEq)]
-pub enum TestStatus {
-    Pass,
-    Fail,
-    Timeout,
-    Skip,
-    Todo,
-    SkippedBecauseLabel,
-}
-
-#[repr(u8)]
-#[derive(Copy, Clone, Eq, PartialEq)]
-pub enum TestType {
-    Test = 0,
-    Describe = 1,
-}
-
-bun_opaque::opaque_ffi! { pub struct TestReporterHandle; }
-
-// SAFETY (safe fn): `TestReporterHandle` and `CallFrame` are `opaque_ffi!`
-// ZST handles (`!Freeze` via `UnsafeCell`); `BunString` is a `#[repr(C)]`
-// in/out-param the C++ side reads/consumes in-place. Remaining args are
-// by-value scalars.
-unsafe extern "C" {
-    safe fn Bun__TestReporterAgentReportTestFound(
-        agent: &mut TestReporterHandle,
-        call_frame: &CallFrame,
-        test_id: c_int,
-        name: &BunString,
-        item_type: TestType,
-        parent_id: c_int,
-    );
-    safe fn Bun__TestReporterAgentReportTestFoundWithLocation(
-        agent: &mut TestReporterHandle,
-        test_id: c_int,
-        name: &BunString,
-        item_type: TestType,
-        parent_id: c_int,
-        source_url: &BunString,
-        line: c_int,
-    );
-    safe fn Bun__TestReporterAgentReportTestStart(agent: &mut TestReporterHandle, test_id: c_int);
-    safe fn Bun__TestReporterAgentReportTestEnd(
-        agent: &mut TestReporterHandle,
-        test_id: c_int,
-        bun_test_status: TestStatus,
-        elapsed: f64,
-    );
-}
-
-impl TestReporterHandle {
-    pub(crate) fn report_test_found(
-        &mut self,
-        call_frame: &CallFrame,
-        test_id: i32,
-        name: &BunString,
-        item_type: TestType,
-        parent_id: i32,
-    ) {
-        Bun__TestReporterAgentReportTestFound(
-            self, call_frame, test_id, name, item_type, parent_id,
-        );
-    }
-
-    pub fn report_test_found_with_location(
-        &mut self,
-        test_id: i32,
-        name: &BunString,
-        item_type: TestType,
-        parent_id: i32,
-        source_url: &BunString,
-        line: i32,
-    ) {
-        Bun__TestReporterAgentReportTestFoundWithLocation(
-            self, test_id, name, item_type, parent_id, source_url, line,
-        );
-    }
-
-    pub(crate) fn report_test_start(&mut self, test_id: c_int) {
-        Bun__TestReporterAgentReportTestStart(self, test_id);
-    }
-
-    pub(crate) fn report_test_end(
-        &mut self,
-        test_id: c_int,
-        bun_test_status: TestStatus,
-        elapsed: f64,
-    ) {
-        Bun__TestReporterAgentReportTestEnd(self, test_id, bun_test_status, elapsed);
-    }
-}
-
-// HOST_EXPORT(Bun__TestReporterAgentEnable, c)
-pub fn test_reporter_agent_enable(agent: *mut TestReporterHandle) {
-    // SAFETY: `VirtualMachine::get()` returns the per-thread singleton; called
-    // on the JS thread.
-    if let Some(dbg) = VirtualMachine::get().as_mut().debugger.as_deref_mut() {
-        bun_core::scoped_log!(TestReporterAgent, "enable");
-        dbg.test_reporter_agent.handle = agent;
-
-        // Retroactively report any tests that were already discovered before
-        // the debugger connected.
-        //
-        // LAYERING: `retroactivelyReportDiscoveredTests` reaches into
-        // the test runner (`bun_test.DescribeScope`), which lives in `bun_runtime::test_runner`
-        // — a forward-dep cycle. Dispatched through [`RuntimeHooks`].
-        if let Some(hooks) = runtime_hooks() {
-            // SAFETY: `handle` is the live C++ agent just stored above.
-            dbg.test_reporter_agent.next_test_id = unsafe {
-                (hooks.retroactively_report_discovered_tests)(
-                    dbg.test_reporter_agent.handle,
-                    dbg.test_reporter_agent.next_test_id,
-                )
-            };
-        }
-    }
-}
-
-// HOST_EXPORT(Bun__TestReporterAgentDisable, c)
-pub fn test_reporter_agent_disable(_agent: *mut TestReporterHandle) {
-    // SAFETY: `VirtualMachine::get()` returns the per-thread singleton; called
-    // on the JS thread.
-    if let Some(dbg) = VirtualMachine::get().as_mut().debugger.as_deref_mut() {
-        bun_core::scoped_log!(TestReporterAgent, "disable");
-        dbg.test_reporter_agent.handle = core::ptr::null_mut();
-    }
-}
-
-impl TestReporterAgent {
-    /// Safe `&mut TestReporterHandle` accessor — `handle` is a live C++
-    /// `Inspector::TestReporterAgent*` once the agent is enabled. Caller must
-    /// ensure `is_enabled()` (handle != null).
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    fn handle_mut(&self) -> &mut TestReporterHandle {
-        debug_assert!(!self.handle.is_null());
-        // Caller contract — `is_enabled()` checked; handle is a live C++ heap
-        // allocation owned by the inspector backend. `TestReporterHandle` is an
-        // opaque ZST handle so the deref is the centralised `opaque_mut` proof.
-        TestReporterHandle::opaque_mut(self.handle)
-    }
-
-    /// Caller must ensure that it is enabled first.
-    ///
-    /// Since we may have to call .deinit on the name string.
-    pub fn report_test_found(
-        &self,
-        call_frame: &CallFrame,
-        test_id: i32,
-        name: &BunString,
-        item_type: TestType,
-        parent_id: i32,
-    ) {
-        bun_core::scoped_log!(TestReporterAgent, "reportTestFound");
-        self.handle_mut()
-            .report_test_found(call_frame, test_id, name, item_type, parent_id);
-    }
-
-    /// Caller must ensure that it is enabled first.
-    pub fn report_test_start(&self, test_id: i32) {
-        bun_core::scoped_log!(TestReporterAgent, "reportTestStart");
-        self.handle_mut().report_test_start(test_id);
-    }
-
-    /// Caller must ensure that it is enabled first.
-    pub fn report_test_end(&self, test_id: i32, bun_test_status: TestStatus, elapsed: f64) {
-        bun_core::scoped_log!(TestReporterAgent, "reportTestEnd");
-        self.handle_mut()
-            .report_test_end(test_id, bun_test_status, elapsed);
-    }
-
-    pub fn is_enabled(&self) -> bool {
-        !self.handle.is_null()
-    }
 }
 
 // ─── LifecycleAgent ───────────────────────────────────────────────────────

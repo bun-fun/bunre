@@ -1449,13 +1449,6 @@ impl CronJob {
         Self::remove_from_list(this);
     }
 
-    /// The fake heap dropped this job's timer (`useRealTimers()` /
-    /// `clearAllTimers()`): stop the job as `stop()` would, so it does not
-    /// keep the event loop alive for a timer that can no longer fire.
-    pub(crate) fn stop_dropped_from_fake_heap(this: ThisPtr<Self>) {
-        Self::self_stop(this, VirtualMachine::get());
-    }
-
     /// May free `this`.
     fn self_stop(this: ThisPtr<Self>, vm: &VirtualMachine) {
         // While the callback is on the stack or its promise is pending, defer

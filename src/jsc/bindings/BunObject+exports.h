@@ -3,7 +3,6 @@
 
 // --- Getters ---
 #define FOR_EACH_GETTER(macro) \
-    macro(Archive) \
     macro(CryptoHasher) \
     macro(FFI) \
     macro(FileSystemRouter) \

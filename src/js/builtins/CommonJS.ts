@@ -68,7 +68,7 @@ export function overridableRequire(this: JSCommonJSModule, originalId: string, o
   }
 
   if (id === "bun:test") {
-    return Bun.jest(this.filename);
+    throw new Error('Cannot find module "bun:test"');
   }
 
   // To handle import/export cycles, we need to create a module object and put

@@ -782,38 +782,9 @@ impl PackageJSON {
                     break 'update_dependencies;
                 }
 
-                // // if there is a name & version, check if the lockfile has the package
-                if !package_json.name.is_empty() && !package_json.version.is_empty() {
-                    if let Some(pm) = r.auto_installer() {
-                        let tag = pm.infer_dependency_tag(&package_json.version);
-
-                        if tag == DependencyVersionTag::Npm {
-                            let sliced = Semver::SlicedString::init(
-                                &package_json.version,
-                                &package_json.version,
-                            );
-                            if let Some(dependency_version) = pm.parse_dependency_with_tag(
-                                SemverString::init(&package_json.name, &package_json.name),
-                                Semver::semver_string::Builder::string_hash(&package_json.name),
-                                &package_json.version,
-                                DependencyVersionTag::Npm,
-                                &sliced,
-                                Some(&mut *r_log),
-                            ) {
-                                if dependency_version.is_exact_npm() {
-                                    if let Some(resolved) =
-                                        pm.lockfile_resolve(&package_json.name, &dependency_version)
-                                    {
-                                        package_json.package_manager_package_id = resolved;
-                                        if resolved > 0 {
-                                            break 'update_dependencies;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                // bunre has no lockfile, so the package's own entry never resolves
+                // to a `package_manager_package_id` here — only the `package_id`
+                // argument can set one.
                 if let Some(os_field) = json.get(b"cpu") {
                     if let Some(array_const) = os_field.as_array() {
                         let mut array = array_const;
@@ -891,27 +862,11 @@ impl PackageJSON {
                                         package_json.dependencies.source_buf,
                                         name_str,
                                     );
-                                    let Some(version_str) = prop.value.as_str() else {
-                                        continue;
-                                    };
-                                    let sliced_str =
-                                        Semver::SlicedString::init(version_str, version_str);
-
-                                    // The parser body lives in install-tier so route through
-                                    // the AutoInstaller vtable when one is wired. When it
-                                    // isn't, still record the dependency name (with an
-                                    // uninitialized-tag version) — `bun run --filter` reads
-                                    // only the map keys to compute workspace ordering.
-                                    let dependency_version = match r.auto_installer() {
-                                        Some(pm) => pm.parse_dependency(
-                                            name,
-                                            Some(name_hash),
-                                            version_str,
-                                            &sliced_str,
-                                            Some(&mut *r_log),
-                                        ),
-                                        None => Some(DependencyVersion::default()),
-                                    };
+                                    // The version parser lives in the install tier, which bunre
+                                    // does not have: record the dependency name with an
+                                    // uninitialized-tag version so the map keys stay
+                                    // populated.
+                                    let dependency_version = Some(DependencyVersion::default());
                                     if let Some(dependency_version) = dependency_version {
                                         let dependency = Dependency {
                                             name,
@@ -1333,40 +1288,6 @@ pub struct PackageExternal {
 }
 
 impl<'a> Package<'a> {
-    pub(crate) fn count(self, builder: &mut Semver::semver_string::Builder) {
-        builder.count(self.name);
-    }
-
-    pub(crate) fn clone(self, builder: &mut Semver::semver_string::Builder) -> PackageExternal {
-        PackageExternal {
-            name: builder.append_without_pool::<Semver::String>(self.name, 0),
-        }
-    }
-
-    /// Allocate a fresh string buffer and clone `name`/`version`/`subpath`
-    /// into it as offset-encoded `Semver::String`s. Mirrors the inline
-    /// `count` → `allocate` → `clone` Builder dance the resolver does at the
-    /// auto-install pending sites, exposed as the `esm.copy` helper.
-    pub(crate) fn copy(self) -> crate::CrateResult<(PackageExternal, Vec<u8>)> {
-        let mut builder = Semver::semver_string::Builder::default();
-        self.count(&mut builder);
-        builder.allocate()?;
-        let cloned = self.clone(&mut builder);
-        let string_buf = builder.ptr.take().map(|b| b.into_vec()).unwrap_or_default();
-        Ok((cloned, string_buf))
-    }
-
-    pub(crate) fn with_auto_version(self) -> Package<'a> {
-        if self.version.is_empty() {
-            return Package {
-                name: self.name,
-                subpath: self.subpath,
-                version: b"latest",
-            };
-        }
-
-        self
-    }
     pub(crate) fn parse_name(specifier: &[u8]) -> Option<&[u8]> {
         let mut slash = strings::index_of_char_neg(specifier, b'/');
         if !strings::starts_with_char(specifier, b'@') {

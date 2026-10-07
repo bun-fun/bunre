@@ -29,8 +29,6 @@ pub use bun_jsc::BuildMessage;
 pub use bun_jsc::ResolveMessage;
 
 // ─── compiling submodules (api/ dir) ─────────────────────────────────────────
-#[path = "api/Archive.rs"]
-pub mod archive;
 #[path = "api/BunObject.rs"]
 pub mod bun_object;
 #[path = "api/crash_handler_jsc.rs"]

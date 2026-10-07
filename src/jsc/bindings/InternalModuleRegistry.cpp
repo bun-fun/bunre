@@ -28,22 +28,7 @@ extern "C" bool Bun__standaloneInternalModuleBytecode(void* bunVM, uint32_t id, 
 
 namespace Bun {
 
-extern "C" bool BunTest__shouldGenerateCodeCoverage(const BunString* sourceURL);
-extern "C" void ByteRangeMapping__generate(const BunString* sourceURL, const BunString* code, int sourceID);
 
-static void maybeAddCodeCoverage(JSC::VM& vm, const JSC::SourceCode& code)
-{
-#if ASSERT_ENABLED
-    bool isCodeCoverageEnabled = !!vm.controlFlowProfiler();
-    BunString sourceURL = Bun::toString(code.provider()->sourceURL());
-    bool shouldGenerateCodeCoverage = isCodeCoverageEnabled && BunTest__shouldGenerateCodeCoverage(&sourceURL);
-    if (shouldGenerateCodeCoverage) {
-        WTF::String sourceString = code.provider()->source().toStringWithoutCopying();
-        BunString source = Bun::toString(sourceString);
-        ByteRangeMapping__generate(&sourceURL, &source, code.provider()->asID());
-    }
-#endif
-}
 
 // JS internal modules are compiled from the sources linked into the executable's builtins section (see
 // InternalModuleRegistryConstants.h). In debug mode the sources are read from the developer's filesystem instead,
@@ -108,7 +93,6 @@ JSC::JSValue generateInternalModule(JSC::JSGlobalObject* globalObject, JSC::VM& 
     const auto& m = internalModuleRecord(id);
     String moduleName = internalModuleString(m.nameOffset, m.nameLength);
     SourceCode source = makeInternalModuleSource(internalModuleSource(id), moduleName, internalModuleString(m.urlOffset, m.urlLength));
-    maybeAddCodeCoverage(vm, source);
 
     UnlinkedFunctionExecutable* executable = nullptr;
     const uint8_t* cachedBytes = nullptr;

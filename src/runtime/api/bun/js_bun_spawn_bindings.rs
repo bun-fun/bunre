@@ -268,7 +268,7 @@ pub(crate) fn spawn(
     args: JSValue,
     secondary_args_value: Option<JSValue>,
 ) -> JsResult<JSValue> {
-    spawn_maybe_sync(false, global_this, args, secondary_args_value, &mut None)
+    spawn_maybe_sync(false, global_this, args, secondary_args_value)
 }
 
 /// Bun.spawnSync() calls this.
@@ -277,33 +277,7 @@ pub(crate) fn spawn_sync(
     args: JSValue,
     secondary_args_value: Option<JSValue>,
 ) -> JsResult<JSValue> {
-    let mut bun_test_deadline: Option<Timespec> = None;
-    let result = spawn_maybe_sync(
-        true,
-        global_this,
-        args,
-        secondary_args_value,
-        &mut bun_test_deadline,
-    );
-    // A bun:test deadline that passed while the isolated loop was blocking is reported only now: the loop is torn down and the child reaped, so the runner's callback re-enters nothing that is mid-flight. With an exception pending (spawn failure, termination) the file timer is left armed and reports it from the main loop instead.
-    if let Some(deadline) = bun_test_deadline
-        && result.is_ok()
-        && !global_this.has_exception()
-        && let Some(runner) = crate::test_runner::jest::Jest::runner()
-        && let Some(active_file) = runner.bun_test_root.active_file.clone()
-    {
-        let vm = global_this.bun_vm().as_mut();
-        runner.remove_active_timeout(vm);
-        crate::test_runner::bun_test::BunTest::bun_test_timeout_callback(
-            &active_file,
-            &deadline,
-            vm,
-        );
-        if global_this.has_exception() {
-            return Ok(JSValue::ZERO);
-        }
-    }
-    result
+    spawn_maybe_sync(true, global_this, args, secondary_args_value)
 }
 
 fn spawn_maybe_sync(
@@ -311,7 +285,6 @@ fn spawn_maybe_sync(
     global_this: &JSGlobalObject,
     args_: JSValue,
     secondary_args_value: Option<JSValue>,
-    bun_test_deadline: &mut Option<Timespec>,
 ) -> JsResult<JSValue> {
     if is_sync {
         // We skip this on Windows due to test failures.
@@ -1834,7 +1807,7 @@ fn spawn_maybe_sync(
     // Use the isolated event loop to tick instead of the main event loop
     // This ensures JavaScript timers don't fire and stdin/stdout from the main process aren't affected
     {
-        let mut absolute_timespec = Timespec::EPOCH;
+        let absolute_timespec = Timespec::EPOCH;
         let mut now = Timespec::now(TimespecMockMode::ForceRealTime);
         let mut user_timespec: Timespec = if let Some(timeout_ms) = timeout {
             now.add_ms(i64::from(timeout_ms))
@@ -1873,7 +1846,6 @@ fn spawn_maybe_sync(
         }
 
         let has_user_timespec = !user_timespec.eql(&Timespec::EPOCH);
-        let mut bun_test_fired = false;
 
         // SAFETY: jsc_vm_ptr is the live thread VM; re-borrowed for the nested arg.
         let sync_loop = unsafe { &mut *jsc_vm_ptr }
@@ -1881,27 +1853,8 @@ fn spawn_maybe_sync(
             .spawn_sync_event_loop(unsafe { &mut *jsc_vm_ptr });
 
         while subprocess.compute_has_pending_activity() {
-            // Re-evaluate this at each iteration of the loop since it may change between iterations.
-            let bun_test_timeout: Timespec = if bun_test_fired {
-                Timespec::EPOCH
-            } else if let Some(runner) = crate::test_runner::jest::Jest::runner() {
-                runner.get_active_timeout()
-            } else {
-                Timespec::EPOCH
-            };
-            let has_bun_test_timeout = !bun_test_timeout.eql(&Timespec::EPOCH);
 
-            if has_bun_test_timeout {
-                match Timespec::order_ignore_epoch(bun_test_timeout, user_timespec) {
-                    core::cmp::Ordering::Less => absolute_timespec = bun_test_timeout,
-                    core::cmp::Ordering::Equal => {}
-                    core::cmp::Ordering::Greater => absolute_timespec = user_timespec,
-                }
-            } else if has_user_timespec {
-                absolute_timespec = user_timespec;
-            } else {
-                absolute_timespec = Timespec::EPOCH;
-            }
+
             let has_timespec = !absolute_timespec.eql(&Timespec::EPOCH);
 
             if let Writable::Buffer(buffer) = subprocess.stdin.get() {
@@ -1935,35 +1888,13 @@ fn spawn_maybe_sync(
                         let _ = subprocess.try_kill(subprocess.kill_signal);
                     }
 
-                    // Support bun:test timeouts AND spawnSync() timeout.
-                    // There is a scenario where inside of spawnSync() a totally
-                    // different test fails, and that SHOULD be okay.
-                    // Kill the dangling processes now so this loop can drain, but leave the runner's timeout callback to `spawn_sync`: it re-enters the test runner and must not run while this isolated loop is still active.
-                    if has_bun_test_timeout
-                        && bun_test_timeout.order(&now) == core::cmp::Ordering::Less
-                    {
-                        bun_test_fired = true;
-                        *bun_test_deadline = Some(absolute_timespec);
-                        if let Some(active_file) = crate::test_runner::jest::Jest::runner()
-                            .unwrap()
-                            .bun_test_root
-                            .active_file
-                            .clone()
-                        {
-                            active_file
-                                .get()
-                                .execution
-                                .kill_dangling_processes_on_timeout(global_this);
-                        }
-                        let _ = subprocess.try_kill(subprocess.kill_signal);
-                    }
                 }
             }
 
-            // Once the wait is being terminated (timeout, maxBuffer, bun:test
-            // per-test timeout), stop waiting on pipe EOF; a grandchild may
-            // still hold the write end (Node.js SyncProcessRunner::Kill()).
-            if did_timeout || bun_test_fired || subprocess.exited_due_to_maxbuf.get().is_some() {
+            // Once the wait is being terminated (timeout, maxBuffer), stop waiting on
+            // pipe EOF; a grandchild may still hold the write end (Node.js
+            // SyncProcessRunner::Kill()).
+            if did_timeout || subprocess.exited_due_to_maxbuf.get().is_some() {
                 subprocess.close_readable_pipes();
             }
         }

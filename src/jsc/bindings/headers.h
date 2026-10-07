@@ -232,7 +232,6 @@ CPP_DECL bool JSC__JSValue__isSymbol(JSC::EncodedJSValue JSValue0);
 CPP_DECL bool JSC__JSValue__isTerminationException(JSC::EncodedJSValue JSValue0);
 CPP_DECL bool JSC__JSValue__isUInt32AsAnyInt(JSC::EncodedJSValue JSValue0);
 CPP_DECL bool JSC__JSValue__jestDeepEquals(JSC::EncodedJSValue JSValue0, JSC::EncodedJSValue JSValue1, JSC::JSGlobalObject* arg2);
-CPP_DECL bool JSC__JSValue__jestDeepMatch(JSC::EncodedJSValue JSValue0, JSC::EncodedJSValue JSValue1, JSC::JSGlobalObject* arg2, bool arg3);
 CPP_DECL bool JSC__JSValue__jestStrictDeepEquals(JSC::EncodedJSValue JSValue0, JSC::EncodedJSValue JSValue1, JSC::JSGlobalObject* arg2);
 CPP_DECL JSC::EncodedJSValue JSC__JSValue__jsNumberFromDouble(double arg0);
 CPP_DECL JSC::EncodedJSValue JSC__JSValue__jsNumberFromInt64(int64_t arg0);
@@ -743,8 +742,6 @@ BUN_DECLARE_HOST_FUNCTION(Bun__HTMLRewriter__onHandlerReject);
 
 #ifdef __cplusplus
 
-BUN_DECLARE_HOST_FUNCTION(Bun__TestScope__Describe2__bunTestThen);
-BUN_DECLARE_HOST_FUNCTION(Bun__TestScope__Describe2__bunTestCatch);
 BUN_DECLARE_HOST_FUNCTION(Bun__CronJob__onPromiseResolve);
 BUN_DECLARE_HOST_FUNCTION(Bun__CronJob__onPromiseReject);
 

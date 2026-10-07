@@ -9,7 +9,6 @@ use crate::schema::api;
 use bun_collections::ArrayHashMap;
 
 use crate::bundle_enums;
-use crate::code_coverage_options::CodeCoverageOptions;
 use crate::compile_target::CompileTarget;
 use crate::global_cache::GlobalCache;
 use crate::offline_mode::OfflineMode;
@@ -419,7 +418,6 @@ pub struct TestOptions {
     pub seed: Option<u32>,
     pub concurrent_test_glob: Option<Vec<Box<[u8]>>>,
     pub bail: u32,
-    pub coverage: CodeCoverageOptions,
     pub path_ignore_patterns: Vec<Box<[u8]>>,
     pub path_ignore_patterns_from_cli: bool,
     pub test_filter_pattern: Option<Box<[u8]>>,
@@ -503,7 +501,6 @@ impl Default for TestOptions {
             seed: None,
             concurrent_test_glob: None,
             bail: 0,
-            coverage: CodeCoverageOptions::default(),
             path_ignore_patterns: Vec::new(),
             path_ignore_patterns_from_cli: false,
             test_filter_pattern: None,

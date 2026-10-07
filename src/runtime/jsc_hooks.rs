@@ -107,9 +107,6 @@ pub(crate) struct RuntimeState {
     /// still-occupied slot while still freeing the pool allocation itself.
     pub(crate) body_value_pool: Box<core::mem::ManuallyDrop<crate::webcore::body::HiveAllocator>>,
     pub(crate) active_handles: ActiveHandles,
-    /// The resolver's PackageManager wake-handler context (module queue + VM
-    /// handle); the resolver holds a raw pointer to it. Freed with the state.
-    pub(crate) wake_ctx: Option<Box<bun_jsc::async_module::WakeContext>>,
     /// In-process `Bun.cron()` jobs that `--hot` reload / worker teardown must
     /// stop; one ref per entry, released by `CronJob::remove_from_list` /
     /// `clear_all_for_vm`.
@@ -419,7 +416,6 @@ unsafe fn init_runtime_state(
             }
         },
         active_handles: ActiveHandles::default(),
-        wake_ctx: None,
         cron_jobs: Vec::new(),
     }));
     RUNTIME_STATE.with(|c| c.set(state));
@@ -491,37 +487,6 @@ unsafe fn init_runtime_state(
                     // from CLI args to the resolver so symlinked node_modules
                     // entries resolve via their link path (peer deps stay reachable).
                     t.resolver.opts.preserve_symlinks = preserve_symlinks;
-                    let wake_ctx: *mut bun_jsc::async_module::WakeContext = &raw mut **(*state)
-                        .wake_ctx
-                        .insert(Box::new(bun_jsc::async_module::WakeContext {
-                            queue: &raw mut (*vm).modules,
-                            handle: (*vm).handle(),
-                            kind: (*vm).current_loop_kind(),
-                        }));
-                    t.resolver.on_wake_package_manager = bun_resolver::install_types::WakeHandler {
-                        context: core::ptr::NonNull::new(wake_ctx.cast()),
-                        handler: Some(bun_jsc::async_module::Queue::on_wake_handler),
-                        on_dependency_error: Some({
-                            unsafe fn adapter(
-                                ctx: *mut core::ffi::c_void,
-                                dep: &bun_resolver::install_types::Dependency,
-                                id: bun_resolver::install_types::DependencyID,
-                                err: &'static str,
-                            ) {
-                                // SAFETY: `ctx` is the `WakeContext` set just above; its queue is `(*vm).modules`.
-                                unsafe {
-                                    bun_jsc::async_module::Queue::on_dependency_error(
-                                        bun_jsc::async_module::Queue::queue_from_wake_context(ctx)
-                                            .cast(),
-                                        dep,
-                                        id,
-                                        err,
-                                    )
-                                }
-                            }
-                            adapter
-                        }),
-                    };
                     // Branch on `opts.graph` here — with a module graph,
                     // auto_jsx=true would
                     // `read_dir_info(cwd)` and cache its tsconfig.json BEFORE
@@ -1541,7 +1506,6 @@ static __BUN_RUNTIME_HOOKS: RuntimeHooks = RuntimeHooks {
     parse_worker_exec_argv_flags,
     stop_cron_for_vm_teardown,
     cron_clear_all_reload,
-    retroactively_report_discovered_tests,
     cancel_all_timers,
     stop_dns_for_vm_teardown,
     stop_active_handles_for_vm_teardown: stop_active_handles_for_vm_teardown_hook,
@@ -1726,35 +1690,15 @@ pub(crate) fn stop_active_handles_for_vm_teardown(vm: &mut VirtualMachine) -> Sw
     stop_active_handles(vm)
 }
 
-fn stop_active_handles(vm: &mut VirtualMachine) -> SweepResult {
+fn stop_active_handles(_vm: &mut VirtualMachine) -> SweepResult {
     let state = runtime_state();
     if state.is_null() {
         return SweepResult::Idle;
     }
     let mut result = SweepResult::Idle;
-    // Fake-timer state lives in the per-thread `timer::All`, not the JS
-    // global, so a file that leaves it active routes every later file's
-    // `setTimeout` into the never-driven fake heap. Leave the heap itself
-    // intact: `swap_global_for_test_isolation` runs `cancel_all_timeout_objects`
-    // next, which walks both heaps and releases `TimeoutObject` pins and
-    // discards `AbortSignalTimeout` timers at a point where no user JS can
-    // touch the outgoing signals.
-    {
-        let all = timer_all();
-        // SAFETY: `state` is non-null so `timer_all()` is non-null; single
-        // JS thread, no re-entry while we hold the field borrow.
-        if !all.is_null() && unsafe { (*all).fake_timers.is_active() } {
-            let global = vm.global();
-            // SAFETY: as above; only touches `fake_timers.active` and the
-            // `CURRENT_TIME` static.
-            unsafe { (*all).fake_timers.reset_for_isolation(global) };
-        }
-        if !all.is_null() {
-            // SAFETY: as above; `disable` borrows only `event_loop_delay` and
-            // reaches the heap through `timer_all()` (disjoint-field access).
-            unsafe { (*all).event_loop_delay.disable() };
-        }
-    }
+    // SAFETY: `timer_all()` is the live per-thread `timer::All`; disable
+    // borrows only `event_loop_delay`.
+    unsafe { (*timer_all()).event_loop_delay.disable() };
     loop {
         // SAFETY: live boxed per-thread `RuntimeState`; the borrow ends before
         // the close below re-enters JS.
@@ -1828,130 +1772,20 @@ fn stop_active_handles(vm: &mut VirtualMachine) -> SweepResult {
 /// # Safety
 /// `agent` is a live C++ `Inspector::TestReporterAgent::Handle*` (just stored
 /// into `debugger.test_reporter_agent.handle` by the caller). Called on the JS
-/// thread.
-unsafe fn retroactively_report_discovered_tests(
-    agent: *mut bun_jsc::debugger::TestReporterHandle,
-    next_test_id: i32,
-) -> i32 {
-    use crate::test_runner::bun_test::{DescribeScope, Phase, TestScheduleEntry};
-    use crate::test_runner::jest::Jest;
-    use bun_jsc::debugger::{TestReporterHandle, TestType};
-
-    let Some(runner) = Jest::runner() else {
-        return next_test_id;
-    };
-    let Some(active_file) = runner.bun_test_root.active_file.as_ref() else {
-        return next_test_id;
-    };
-    // SAFETY: single-threaded; `active_file` keeps the cell alive for this call.
-    let active_file = unsafe { &mut *active_file.as_ptr() };
-
-    // Only report if we're in collection or execution phase (tests have been
-    // discovered).
-    match active_file.phase {
-        Phase::Collection | Phase::Execution => {}
-        Phase::Done => return next_test_id,
-    }
-
-    // Get the file path for source location info.
-    use crate::test_runner::jest::FileColumns as _;
-    let file_path = runner.files.items_source()[active_file.file_id as usize]
-        .path
-        .text();
-    let source_url = bun_core::String::from_bytes(file_path);
-
-    let mut max_id: i32 = next_test_id;
-
-    // Recursively report all discovered tests starting from root scope.
-    retroactively_report_scope(
-        agent,
-        &mut active_file.collection.root_scope,
-        -1,
-        &mut max_id,
-        &source_url,
-    );
-
-    return max_id;
-
-    fn retroactively_report_scope(
-        agent: *mut TestReporterHandle,
-        scope: &mut DescribeScope,
-        parent_id: i32,
-        max_id: &mut i32,
-        source_url: &bun_core::String,
-    ) {
-        for entry in scope.entries.iter_mut() {
-            match entry {
-                TestScheduleEntry::Describe(describe) => {
-                    if describe.base.test_id_for_debugger == 0 {
-                        *max_id += 1;
-                        let test_id = *max_id;
-                        // Assign the ID so start/end events will fire during
-                        // execution.
-                        describe.base.test_id_for_debugger = test_id;
-                        let name = bun_core::String::from_bytes(
-                            describe.base.name.as_deref().unwrap_or(b"(unnamed)"),
-                        );
-                        // SAFETY: `agent` is a live C++ handle (fn contract).
-                        unsafe { &mut *agent }.report_test_found_with_location(
-                            test_id,
-                            &name,
-                            TestType::Describe,
-                            parent_id,
-                            source_url,
-                            describe.base.line_no as i32,
-                        );
-                        // Recursively report children with this describe as
-                        // parent.
-                        retroactively_report_scope(agent, describe, test_id, max_id, source_url);
-                    } else {
-                        // Already has ID, just recurse with existing ID as
-                        // parent.
-                        let existing = describe.base.test_id_for_debugger;
-                        retroactively_report_scope(agent, describe, existing, max_id, source_url);
-                    }
-                }
-                TestScheduleEntry::TestCallback(test_entry) => {
-                    if test_entry.base.test_id_for_debugger == 0 {
-                        *max_id += 1;
-                        let test_id = *max_id;
-                        test_entry.base.test_id_for_debugger = test_id;
-                        let name = bun_core::String::from_bytes(
-                            test_entry.base.name.as_deref().unwrap_or(b"(unnamed)"),
-                        );
-                        // SAFETY: `agent` is a live C++ handle (fn contract).
-                        unsafe { &mut *agent }.report_test_found_with_location(
-                            test_id,
-                            &name,
-                            TestType::Test,
-                            parent_id,
-                            source_url,
-                            test_entry.base.line_no as i32,
-                        );
-                    }
-                }
-            }
-        }
-    }
-}
-
 // ════════════════════════════════════════════════════════════════════════════
 // ConsoleObject runtime-type hooks
 // ════════════════════════════════════════════════════════════════════════════
-
-/// `Jest.runner.?.bun_test_root.onBeforePrint()` — flush the test reporter's
-/// line state before user `console.log` output interleaves with it.
-fn console_on_before_print() {
-    if let Some(runner) = crate::test_runner::jest::Jest::runner() {
-        runner.bun_test_root.on_before_print();
-    }
-}
 
 use bun_io::AsFmt;
 
 /// `ConsoleObject.Formatter.printAs(.Private, …)` runtime-type chain — see
 /// [`RuntimeHooks::console_print_runtime_object`]. Returns `true` when `value`
 /// matched one of the high-tier types and was fully formatted.
+/// The test reporter used to flush its pending line state here before
+/// console.log interleaved with it. bunre has no test runner, so the hook
+/// the C++ runtime-hooks table still references is a no-op.
+fn console_on_before_print() {}
+
 fn console_print_runtime_object<'a, 'f>(
     formatter: &'a mut bun_jsc::Formatter<'f>,
     writer: &'a mut dyn bun_io::Write,
@@ -1971,7 +1805,6 @@ fn console_print_runtime_object_inner<const C: bool>(
     value: JSValue,
 ) -> JsResult<bool> {
     use crate::api::BuildArtifact;
-    use crate::api::archive::Archive;
     use crate::webcore::{Blob, Request, Response, S3Client};
     use core::fmt::Write as _;
 
@@ -2019,11 +1852,6 @@ fn console_print_runtime_object_inner<const C: bool>(
     if let Some(s3client) = value.as_class_ref::<S3Client>() {
         let mut w = AsFmt::new(writer_);
         let _ = s3client.write_format::<_, _, C>(formatter, &mut w);
-        return Ok(true);
-    }
-    if let Some(archive) = value.as_class_ref::<Archive>() {
-        let mut w = AsFmt::new(writer_);
-        let _ = archive.write_format::<_, _, C>(formatter, &mut w);
         return Ok(true);
     }
     if bun_jsc::FetchHeaders::cast_(value, formatter.global_this.vm()).is_some() {
@@ -2113,18 +1941,6 @@ fn console_print_runtime_object_inner<const C: bool>(
         let _ = resolve_log.msg.write_format::<C>(&mut w);
         return Ok(true);
     }
-    {
-        use crate::test_runner::pretty_format::{JestPrettyFormat, WrappedWriter};
-        // `writer_` is `&mut dyn bun_io::Write`; wrap once more so the
-        // (sized) `&mut dyn bun_io::Write` satisfies `WrappedWriter<W>`'s
-        // `W: bun_io::Write` bound via the blanket `impl Write for &mut W`.
-        let mut sink: &mut dyn bun_io::Write = &mut *writer_;
-        let mut wrapped = WrappedWriter::new(&mut sink);
-        if JestPrettyFormat::print_asymmetric_matcher::<_, _, C>(formatter, &mut wrapped, value)? {
-            return Ok(true);
-        }
-    }
-
     Ok(false)
 }
 
@@ -2137,7 +1953,6 @@ fn to_jsc_fetch_error(err: &crate::Error) -> bun_jsc::CrateError {
         crate::Error::Jsc(e) => *e,
         crate::Error::Bundler(e) => (*e).into(),
         crate::Error::Resolver(e) => (*e).into(),
-        crate::Error::Install(e) => (*e).into(),
         crate::Error::Core(e) => (*e).into(),
         crate::Error::Sys(e) => (*e).into(),
         crate::Error::Alloc(e) => (*e).into(),
@@ -2351,9 +2166,9 @@ fn transpile_source_code_inner(
             // arena. Declared after `arena_guard` so it drops before the
             // guard can reset that heap. Small `AstVec`s live in the state's
             // inline chunk, not the arena, so the pending-imports path must
-            // consume this scope via `take_state()` and ship the box with the
+            // no longer shipped anywhere: the scope just drops at fn end.
             // arena.
-            let ast_alloc_scope = bun_alloc::ast_alloc::ScopedAstAlloc::with_spill(arena_heap);
+            let _ast_alloc_scope = bun_alloc::ast_alloc::ScopedAstAlloc::with_spill(arena_heap);
             // ── Watcher package_json lookup ─────────────────────────────────
             let mut package_json: Option<&'static bun_watcher::PackageJSON> = None;
             {
@@ -2398,9 +2213,6 @@ fn transpile_source_code_inner(
                 (*jsc_vm).transpiler.log = args.log;
                 (*jsc_vm).transpiler.resolver.log = args_log_nn;
                 (*jsc_vm).transpiler.linker.log = args.log;
-                if let Some(pm) = (*jsc_vm).transpiler.resolver.package_manager {
-                    (*pm.cast::<bun_install::PackageManager>().as_ptr()).log = args.log;
-                }
             }
             let _log_guard = scopeguard::guard(jsc_vm, move |jsc_vm| {
                 // SAFETY: guard runs on the same JS thread before `jsc_vm` is
@@ -2409,9 +2221,6 @@ fn transpile_source_code_inner(
                     (*jsc_vm).transpiler.log = old_log;
                     (*jsc_vm).transpiler.resolver.log = old_log_nn;
                     (*jsc_vm).transpiler.linker.log = old_log;
-                    if let Some(pm) = (*jsc_vm).transpiler.resolver.package_manager {
-                        (*pm.cast::<bun_install::PackageManager>().as_ptr()).log = old_log;
-                    }
                 }
             });
 
@@ -2994,46 +2803,11 @@ fn transpile_source_code_inner(
                     )?;
                 }
 
-                // Pending imports → AsyncModule queue.
+                // Pending imports mean a bare specifier that was not
+                // resolvable through node_modules. bunre has no
+                // auto-installer to fetch it: fail the load instead.
                 if parse_result.pending_imports.len() > 0 {
-                    // SAFETY: per fn contract — `extra` is live for the call.
-                    let promise_ptr = unsafe { &*extra }.promise_ptr;
-                    if promise_ptr.is_null() {
-                        return Err(crate::Error::UnexpectedPendingResolution);
-                    }
-
-                    if parse_result.source.contents_is_recycled {
-                        // this shared buffer is about to become owned by the AsyncModule struct
-                        // SAFETY: per fn contract — `jsc_vm` is the live per-thread VM.
-                        let fs_cache = unsafe { &mut (*jsc_vm).transpiler.resolver.caches.fs };
-                        let buf = core::ptr::from_mut(fs_cache.shared_buffer()).cast_const();
-                        // `parse_result.source.contents` borrows the detached buffer's bytes;
-                        // ownership moves to the AsyncModule via the arena/parse_result, so the
-                        // swapped-out backing storage must not be freed here.
-                        let _ = core::mem::ManuallyDrop::new(fs_cache.reset_shared_buffer(buf));
-                    }
-
-                    // Hand `arena` ownership to the queue (defuse the give-back guard).
-                    let (_, arena, _, _) = scopeguard::ScopeGuard::into_inner(arena_guard);
-                    // Hand the `AstAlloc` state to the queue too: the queued
-                    // AST's small `AstVec`s live in its inline bump chunk.
-                    let ast_alloc_state = ast_alloc_scope.take_state();
-                    // SAFETY: per fn contract — `jsc_vm` is the live per-thread VM.
-                    unsafe {
-                        (*jsc_vm).modules.enqueue(
-                            global_object,
-                            bun_jsc::async_module::InitOpts {
-                                parse_result,
-                                path: *path,
-                                promise_ptr: Some(promise_ptr),
-                                specifier,
-                                referrer,
-                                arena,
-                                ast_alloc_state,
-                            },
-                        );
-                    }
-                    return Err(crate::Error::AsyncModule);
+                    return Err(crate::Error::UnexpectedPendingResolution);
                 }
 
                 let is_commonjs_module = parse_result.ast.has_commonjs_export_names

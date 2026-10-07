@@ -2052,15 +2052,6 @@ JSC_DEFINE_HOST_FUNCTION(jsWebStreamControllerError, (JSGlobalObject * globalObj
     return JSValue::encode(throwTypeError(globalObject, scope, "Expected a ReadableStream or WritableStream"_s));
 }
 
-extern "C" JSC::EncodedJSValue Bun__Jest__createTestModuleObject(JSC::JSGlobalObject*);
-extern "C" JSC::EncodedJSValue Bun__Jest__testModuleObject(Zig::GlobalObject* globalObject)
-{
-    auto& vm = JSC::getVM(globalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    JSC::JSObject* object = globalObject->lazyTestModuleObject();
-    RETURN_IF_EXCEPTION(scope, {});
-    return JSValue::encode(object);
-}
 
 extern "C" napi_env ZigGlobalObject__makeNapiEnvForFFI(Zig::GlobalObject* globalObject)
 {
@@ -2548,23 +2539,6 @@ void GlobalObject::finishCreation(VM& vm)
                  PropertyAttribute::DontDelete | PropertyAttribute::CustomAccessor);
 
              init.set(crypto);
-         } },
-        { OBJECT_OFFSETOF(GlobalObject, m_lazyTestModuleObject), [](const LazyProperty<JSGlobalObject, JSObject>::Initializer& init) {
-             JSC::JSGlobalObject* globalObject = init.owner;
-
-             JSValue result = JSValue::decode(Bun__Jest__createTestModuleObject(globalObject));
-             JSObject* object = result.isEmpty() ? nullptr : result.getObject();
-             if (!object) [[unlikely]] {
-                 // Creation failed and left an exception pending; cache a plain
-                 // object so the LazyProperty stays valid instead of crashing on
-                 // an empty JSValue.
-                 object = JSC::constructEmptyObject(globalObject);
-             }
-             init.set(object);
-         } },
-        { OBJECT_OFFSETOF(GlobalObject, m_testMatcherUtilsObject), [](const LazyProperty<JSGlobalObject, JSObject>::Initializer& init) {
-             JSValue result = JSValue::decode(ExpectMatcherUtils_createSigleton(init.owner));
-             init.set(result.toObject(init.owner));
          } },
         { OBJECT_OFFSETOF(GlobalObject, m_nodeErrorCache), [](const LazyProperty<JSGlobalObject, JSObject>::Initializer& init) {
              auto* structure = ErrorCodeCache::createStructure(
@@ -4264,10 +4238,6 @@ GlobalObject::PromiseFunctions GlobalObject::promiseHandlerID(Zig::FFIFunction h
         return GlobalObject::PromiseFunctions::jsFunctionOnLoadObjectResultResolve;
     } else if (handler == jsFunctionOnLoadObjectResultReject) {
         return GlobalObject::PromiseFunctions::jsFunctionOnLoadObjectResultReject;
-    } else if (handler == Bun__TestScope__Describe2__bunTestThen) {
-        return GlobalObject::PromiseFunctions::Bun__TestScope__Describe2__bunTestThen;
-    } else if (handler == Bun__TestScope__Describe2__bunTestCatch) {
-        return GlobalObject::PromiseFunctions::Bun__TestScope__Describe2__bunTestCatch;
     } else if (handler == Bun__HTMLRewriter__onHandlerResolve) {
         return GlobalObject::PromiseFunctions::Bun__HTMLRewriter__onHandlerResolve;
     } else if (handler == Bun__HTMLRewriter__onHandlerReject) {

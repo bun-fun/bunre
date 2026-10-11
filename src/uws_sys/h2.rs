@@ -1,6 +1,6 @@
-//! HTTP/2 bindings. Method names mirror NewApp/NewResponse (and h3) 1:1 so
+//! HTTP/2 bindings. Method names mirror NewApp/NewResponse 1:1 so
 //! callers (including the AnyResponse dispatch arms) see the same surface
-//! regardless of transport. Requests are [`crate::h3::Request`]: both
+//! regardless of transport. Requests are [`crate::http_request::Request`].
 //! transports hand C++ the same decoded header list.
 
 use core::ffi::c_void;
@@ -12,7 +12,7 @@ use crate::thunk;
 use crate::{AnyRequest, AnyResponse};
 use bun_ptr::ThisPtr;
 
-pub use crate::h3::Request;
+pub use crate::http_request::Request;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Response
@@ -422,7 +422,7 @@ impl App {
         {
             // SAFETY: `p` is the `ThisPtr` registered with this thunk; the registrant holds a ref on it while the route is registered.
             let this = unsafe { ThisPtr::new(p.cast::<U>()) };
-            thunk::zst::<H>()(this, AnyRequest::H3(req), AnyResponse::H2(res));
+            thunk::zst::<H>()(this, AnyRequest::H2(req), AnyResponse::H2(res));
         }
         Self::route_raw(which, this, pattern, Some(cb::<U, H>), ud.as_ptr().cast());
     }

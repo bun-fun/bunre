@@ -84,7 +84,6 @@ members = [
   "src/shell_parser",
   "src/tcc_sys",
   "src/uws_sys",
-  "src/lsquic_sys",
   "src/zstd",
   "src/options_types",
   "src/output",
@@ -92,7 +91,6 @@ members = [
   "src/simdutf_sys",
   "src/which",
   "src/transpiler",
-  "src/react_compiler",
   "src/spawn",
   "src/spawn_sys",
   "src/bunfig",
@@ -421,7 +419,6 @@ bun_spawn = { path = "src/spawn" }
 bun_spawn_sys = { path = "src/spawn_sys" }
 bun_tcc_sys = { path = "src/tcc_sys" }
 bun_uws_sys = { path = "src/uws_sys" }
-bun_lsquic_sys = { path = "src/lsquic_sys" }
 bun_zstd = { path = "src/zstd" }
 bun_options_types = { path = "src/options_types" }
 bun_bunfig = { path = "src/bunfig" }
@@ -429,6 +426,3 @@ bun_output = { path = "src/output" }
 bun_simdutf_sys = { path = "src/simdutf_sys" }
 bun_which = { path = "src/which" }
 bun_transpiler = { path = "src/transpiler" }
-
-[profile.release.package.bun_react_compiler]
-opt-level = "s"

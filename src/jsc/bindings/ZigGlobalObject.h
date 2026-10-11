@@ -564,12 +564,6 @@ public:
                                                                                                              \
     V(private, LazyClassStructure, m_JSStringDecoderClassStructure)                                          \
     V(private, LazyPropertyOfGlobalObject<JSObject>, m_JSFFICStringConstructor)                              \
-    V(public, LazyClassStructure, m_JSDatabaseSyncClassStructure)                                            \
-    V(public, LazyClassStructure, m_JSStatementSyncClassStructure)                                           \
-    V(public, LazyClassStructure, m_JSStatementSyncIteratorClassStructure)                                   \
-    V(public, LazyClassStructure, m_JSNodeSqliteSessionClassStructure)                                       \
-    V(public, LazyClassStructure, m_JSNodeSqliteLimitsClassStructure)                                        \
-    V(public, LazyClassStructure, m_JSNodeSqliteTagStoreClassStructure)                                      \
     V(private, LazyClassStructure, m_NapiClassStructure)                                                     \
     V(private, LazyClassStructure, m_callSiteStructure)                                                      \
     V(public, LazyClassStructure, m_JSBufferClassStructure)                                                  \

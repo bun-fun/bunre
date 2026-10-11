@@ -403,7 +403,6 @@ unsafe extern "C" {
     safe fn Process__dispatchOnBeforeExit(global: &JSGlobalObject, code: u8);
     safe fn Process__dispatchOnExit(global: &JSGlobalObject, code: u8);
     safe fn Bun__closeAllSQLiteDatabasesForTermination(global: &JSGlobalObject);
-    safe fn Bun__closeAllNodeSqliteDatabasesForTermination(global: &JSGlobalObject);
     safe fn Bun__WebView__closeAllForTermination();
     safe fn Zig__GlobalObject__prepareForDestruction(global: &JSGlobalObject);
     safe fn Zig__GlobalObject__forbidExecution(global: &JSGlobalObject);
@@ -1891,7 +1890,6 @@ impl VirtualMachine {
     /// after any abrupt exit (and as in Node).
     fn close_sqlite_databases_for_exit(&self) {
         Bun__closeAllSQLiteDatabasesForTermination(self.global());
-        Bun__closeAllNodeSqliteDatabasesForTermination(self.global());
     }
 
     /// Tear down this thread's VM: the one sequence both a finished worker
@@ -5001,8 +4999,6 @@ impl VirtualMachine {
             // `setCallbacks` is once-only (node/src/quic/bindingdata.cc
             // `BindingData::SetCallbacks`), so a holder left by the outgoing
             // global makes the next file's call a no-op and dispatches
-            // node:quic events into the dead realm.
-            rare.node_quic_callbacks.deinit();
         }
         let _ = self.event_loop_mut().drain_microtasks();
 

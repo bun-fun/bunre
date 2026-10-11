@@ -31,7 +31,6 @@
     v(events,                 Bun::InternalModuleRegistry::NodeEvents) \
     v(fs,                     Bun::InternalModuleRegistry::NodeFS) \
     v(http,                   Bun::InternalModuleRegistry::NodeHttp) \
-    v(http2,                  Bun::InternalModuleRegistry::NodeHttp2) \
     v(https,                  Bun::InternalModuleRegistry::NodeHttps) \
     v(inspector,              Bun::InternalModuleRegistry::NodeInspector) \
     v(net,                    Bun::InternalModuleRegistry::NodeNet) \

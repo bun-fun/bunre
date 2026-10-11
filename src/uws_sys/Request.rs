@@ -1,41 +1,41 @@
 use core::ffi::c_ushort;
 
-use crate::h3::Request as H3Request;
+use crate::http_request::Request as Http2Request;
 
 /// Transport-agnostic request handle. Static/file routes (and RangeRequest)
 /// take this so the same handler body serves HTTP/1.1 and HTTP/3 without
 /// `anytype` — `inline else` keeps dispatch monomorphic.
 pub enum AnyRequest {
     H1(*mut Request),
-    H3(*mut H3Request),
+    H2(*mut Http2Request),
 }
 
 impl AnyRequest {
     // S008: variant payloads are `opaque_ffi!` ZST handles (`Request` /
-    // `h3::Request`); route the per-arm `*mut → &mut` deref through the
+    // `http_request::Request`); route the per-arm `*mut → &mut` deref through the
     // const-asserted `bun_opaque::opaque_deref_mut` so dispatch is `unsafe`-free.
     pub fn header(&self, name: &[u8]) -> Option<&[u8]> {
         match self {
             Self::H1(r) => bun_opaque::opaque_deref_mut(*r).header(name),
-            Self::H3(r) => bun_opaque::opaque_deref_mut(*r).header(name),
+            Self::H2(r) => bun_opaque::opaque_deref_mut(*r).header(name),
         }
     }
     pub fn method(&self) -> &[u8] {
         match self {
             Self::H1(r) => bun_opaque::opaque_deref_mut(*r).method(),
-            Self::H3(r) => bun_opaque::opaque_deref_mut(*r).method(),
+            Self::H2(r) => bun_opaque::opaque_deref_mut(*r).method(),
         }
     }
     pub fn url(&self) -> &[u8] {
         match self {
             Self::H1(r) => bun_opaque::opaque_deref_mut(*r).url(),
-            Self::H3(r) => bun_opaque::opaque_deref_mut(*r).url(),
+            Self::H2(r) => bun_opaque::opaque_deref_mut(*r).url(),
         }
     }
     pub fn set_yield(&mut self, y: bool) {
         match self {
             Self::H1(r) => bun_opaque::opaque_deref_mut(*r).set_yield(y),
-            Self::H3(r) => bun_opaque::opaque_deref_mut(*r).set_yield(y),
+            Self::H2(r) => bun_opaque::opaque_deref_mut(*r).set_yield(y),
         }
     }
 }

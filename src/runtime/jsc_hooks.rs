@@ -1023,16 +1023,6 @@ unsafe fn auto_tick(vm: *mut VirtualMachine) {
         let has_pending_immediate = has_yielded_tasks
             || !unsafe { &*el }.immediate_tasks.is_empty()
             || unsafe { &*el }.has_pending_tasks();
-        // Fold the QUIC deadline into the poll timeout.
-        // SAFETY: `loop_` is the live per-thread uws loop.
-        let quic_next_tick_us = unsafe {
-            let ild = &(*loop_).internal_loop_data;
-            if ild.quic_head.is_null() {
-                None
-            } else {
-                Some(ild.quic_next_tick_us)
-            }
-        };
         let mut timespec = bun_core::Timespec { sec: 0, nsec: 0 };
         // SAFETY: `loop_` is the live per-thread uws loop.
         if unsafe { (*loop_).is_active() } {
@@ -1060,7 +1050,6 @@ unsafe fn auto_tick(vm: *mut VirtualMachine) {
                     &mut (*state).timer,
                     &mut timespec,
                     has_pending_immediate,
-                    quic_next_tick_us,
                     vm.cast(),
                     &mut now,
                 )
@@ -1161,15 +1150,6 @@ unsafe fn auto_tick_active(vm: *mut VirtualMachine) {
         let has_pending_immediate = has_yielded_tasks
             || !unsafe { &*el }.immediate_tasks.is_empty()
             || unsafe { &*el }.has_pending_tasks();
-        // SAFETY: `loop_` is the live per-thread uws loop.
-        let quic_next_tick_us = unsafe {
-            let ild = &(*loop_).internal_loop_data;
-            if ild.quic_head.is_null() {
-                None
-            } else {
-                Some(ild.quic_next_tick_us)
-            }
-        };
         let mut timespec = bun_core::Timespec { sec: 0, nsec: 0 };
         // SAFETY: `loop_` is the live per-thread uws loop.
         if unsafe { (*loop_).is_active() } {
@@ -1187,7 +1167,6 @@ unsafe fn auto_tick_active(vm: *mut VirtualMachine) {
                     &mut (*state).timer,
                     &mut timespec,
                     has_pending_immediate,
-                    quic_next_tick_us,
                     vm.cast(),
                     &mut now,
                 )

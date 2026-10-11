@@ -1065,18 +1065,12 @@ pub(crate) unsafe fn __bun_fire_timer(
             CronJob::on_timer_fire(unsafe { bun_ptr::ThisPtr::new(c) }, VirtualMachine::get());
             Ok(())
         }
-        EventLoopTimerTag::QuicEndpoint => {
-            let c: *mut crate::node::quic::QuicEndpoint =
-                owner!(crate::node::quic::QuicEndpoint, event_loop_timer);
-            crate::node::quic::QuicEndpoint::on_timer_fire(c);
-            Ok(())
-        }
     };
     fired
 }
 
 /// The fold for a foreign dispatcher's landing frame — a uSockets / uWS /
-/// lsquic / pipe-reader callback that returns `void`, so what its JS left
+/// uWS / pipe-reader callback that returns `void`, so what its JS left
 /// pending has nowhere to go but here: reported as uncaught (or, for the VM's
 /// termination, left for the loop to stand down on), on the JS thread this
 /// dispatch runs on, rather than left pending for whatever enters JS next.

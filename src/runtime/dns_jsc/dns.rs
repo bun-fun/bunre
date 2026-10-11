@@ -2419,14 +2419,12 @@ pub mod internal {
     // Rust; the C side never dereferences fields, so layout is irrelevant.
     #[allow(improper_ctypes)]
     unsafe extern "C" {
-        fn us_internal_dns_callback(socket: *mut ConnectingSocket, req: *mut Request);
         fn us_internal_dns_callback_threadsafe(socket: *mut ConnectingSocket, req: *mut Request);
     }
 
     pub enum DNSRequestOwner {
-        Socket(*mut ConnectingSocket),           // FFI
-        Prefetch(*mut Loop),                     // FFI
-        Quic(*mut bun_http::H3::PendingConnect), // BORROW_PARAM
+        Socket(*mut ConnectingSocket), // FFI
+        Prefetch(*mut Loop),           // FFI
     }
 
     impl DNSRequestOwner {
@@ -2443,30 +2441,6 @@ pub mod internal {
                     us_internal_dns_callback_threadsafe(*socket, req)
                 },
                 DNSRequestOwner::Prefetch(_) => freeaddrinfo(req, 0),
-                // SAFETY: `pc` is the live PendingConnect borrowed for the lifetime of the request.
-                DNSRequestOwner::Quic(pc) => unsafe {
-                    bun_http::H3::PendingConnect::on_dns_resolved_threadsafe(*pc)
-                },
-            }
-        }
-
-        /// # Safety
-        /// `req` must be a live cache `Request` with a populated `result`; the
-        /// callee may take ownership and free it.
-        // Forwards `req` to C++ without dereferencing; not_unsafe_ptr_arg_deref
-        // is a false positive on opaque-token forwarding.
-        #[allow(clippy::not_unsafe_ptr_arg_deref)]
-        pub(crate) fn notify(&self, req: *mut Request) {
-            match self {
-                DNSRequestOwner::Prefetch(_) => freeaddrinfo(req, 0),
-                // SAFETY: `socket` is the live usockets handle stored when the request was registered.
-                DNSRequestOwner::Socket(socket) => unsafe {
-                    us_internal_dns_callback(*socket, req)
-                },
-                // SAFETY: `pc` is the live PendingConnect borrowed for the lifetime of the request.
-                DNSRequestOwner::Quic(pc) => unsafe {
-                    bun_http::H3::PendingConnect::on_dns_resolved(*pc)
-                },
             }
         }
     }
@@ -2484,22 +2458,6 @@ pub mod internal {
     // (see fn doc); forming `&mut *request` at entry would be unsound across
     // that hand-off, so the param must stay `*mut`.
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    fn register_quic(request: *mut Request, pc: *mut bun_http::H3::PendingConnect) {
-        let guard = global_cache().lock();
-        let owner = DNSRequestOwner::Quic(pc);
-        // SAFETY: `request` is a live cache entry; `result`/`notify` are only
-        // touched under `global_cache().lock()`, which is held here.
-        unsafe {
-            if (*request).result.is_some() {
-                drop(guard);
-                owner.notify(request);
-                return;
-            }
-            (*request).notify.push(owner);
-        }
-        drop(guard);
-    }
-
     #[repr(C)]
     pub struct ResultEntry {
         pub(crate) info: AddrInfo,
@@ -3331,19 +3289,6 @@ pub mod internal {
     #[unsafe(no_mangle)]
     extern "C" fn Bun__addrinfo_getRequestResult(req: *mut Request) -> *mut RequestResult {
         get_request_result(req)
-    }
-    /// QUIC analogue of `Bun__addrinfo_set` — link-time export so `bun_http`
-    /// (lower-tier crate) can register without a `bun_runtime` dep cycle.
-    /// Called via `bun_dns::internal::register_quic`.
-    ///
-    /// # Safety
-    /// See [`register_quic`].
-    #[unsafe(no_mangle)]
-    unsafe extern "C" fn Bun__addrinfo_registerQuic(
-        request: *mut Request,
-        pc: *mut bun_http::H3::PendingConnect,
-    ) {
-        register_quic(request, pc)
     }
 }
 
@@ -6063,7 +6008,6 @@ macro_rules! export_host_fn {
                 ::bun_jsc::__macro_support::host_fn_result(g, || $scope::$f(g, f))
             }
             #[cfg(not(all(windows, target_arch = "x86_64")))]
-            #[unsafe(export_name = $name)]
             pub(crate) unsafe extern "C" fn __shim(
                 g: *mut ::bun_jsc::JSGlobalObject,
                 f: *mut ::bun_jsc::CallFrame,

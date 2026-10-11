@@ -376,13 +376,6 @@ impl StringOrBuffer<'_> {
 unsafe impl ThreadIsolatedArg for StringOrBuffer<'static> {}
 
 impl StringOrBuffer<'static> {
-    /// Rust-owned bytes for a work-pool job.
-    #[inline]
-    pub(crate) fn owned_isolated(bytes: Vec<u8>) -> ThreadIsolated<Self> {
-        // SAFETY: owned bytes only.
-        unsafe { ThreadIsolated::new(Self::owned(bytes)) }
-    }
-
     /// `value` is ArrayBuffer-like (the caller checked): borrowed for `Sync`,
     /// pinned and GC-rooted for `Async`.
     pub(crate) fn buffer_from_js(

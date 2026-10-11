@@ -31,12 +31,6 @@ pub struct InternalLoopData {
     pub sweep_timer_count: i32,
     pub wakeup_async: *mut us_internal_async,
     pub head: *mut SocketGroup,
-    pub quic_head: *mut c_void,
-    pub quic_next_tick_us: i64,
-    /// `us_nq_driver_s *` — node:quic's loop driver list.
-    pub(crate) nq_head: *mut c_void,
-    #[cfg(windows)]
-    pub quic_timer: *mut Timer,
     pub iterator: *mut SocketGroup,
     pub recv_buf: *mut u8,
     pub send_buf: *mut u8,

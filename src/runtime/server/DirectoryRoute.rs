@@ -190,13 +190,6 @@ impl DirectoryRoute {
             resp.write_header(b"last-modified", lm);
         }
         resp.write_header(b"etag", etag);
-        if !matches!(resp, AnyResponse::H3(_)) {
-            if let Some(srv) = this.server.get() {
-                if let Some(alt) = srv.h3_alt_svc() {
-                    resp.write_header(b"alt-svc", alt);
-                }
-            }
-        }
 
         if HTTPStatusText::is_null_body(status_code) {
             resp.end_without_body(resp.should_close_connection());

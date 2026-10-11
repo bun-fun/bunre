@@ -24,7 +24,6 @@
     macro(XML) \
     macro(YAML) \
     macro(Terminal) \
-    macro(Transpiler) \
     macro(argv) \
     macro(cron) \
     macro(cwd) \

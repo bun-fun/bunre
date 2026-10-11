@@ -13,7 +13,7 @@ use crate::async_http::{ACTIVE_REQUESTS_COUNT, MAX_SIMULTANEOUS_REQUESTS};
 use crate::http_context::ActiveSocketExt;
 use crate::proxy_tunnel::ProxyTunnel;
 use crate::ssl_config::{self, SSLConfig};
-use crate::{AsyncHttp, HTTPContext, HttpClient, InitError, NewHttpContext, h2, h3};
+use crate::{AsyncHttp, HTTPContext, HttpClient, InitError, NewHttpContext, h2};
 
 // The scope registry keys on name, so the two visibilities (.hidden +
 // .visible) are split into two scope names.
@@ -568,11 +568,6 @@ impl HttpThread {
                     if self.abort_pending_h2_waiter(http.async_http_id) {
                         continue;
                     }
-                    // Or it's on an HTTP/3 session, which has no TCP socket to
-                    // register in the tracker.
-                    if h3::ClientContext::abort_by_http_id(http.async_http_id) {
-                        continue;
-                    }
                     // Otherwise the request either hasn't started yet (still in
                     // `queued_tasks`/`deferred_tasks`) or has already completed.
                     // Flag it so `drainEvents` knows to scan the queue for
@@ -646,7 +641,6 @@ impl HttpThread {
                         }
                     }
                 } else {
-                    h3::ClientContext::stream_body_by_http_id(write.async_http_id, ended);
                 }
             }
             let len = queued_writes.len();
@@ -745,7 +739,6 @@ impl HttpThread {
                         }
                     }
                 } else {
-                    h3::ClientContext::resume_receive_by_http_id(id);
                 }
             }
         }
@@ -760,7 +753,6 @@ impl HttpThread {
         // turn removes the abort-tracker entry first, so the resume becomes a
         // no-op and the request is never transmitted after a same-tick abort.
         self.drain_queued_cert_check_resumes();
-        h3::PendingConnect::drain_resolved();
 
         self.queued_threadlocal_proxy_derefs.clear();
 
@@ -1358,7 +1350,6 @@ pub fn shutdown_for_exit() -> bool {
 }
 
 // dispatch_deps bridge removed — real impls now live in
-// h3_client/ClientContext.rs (abort_by_http_id / stream_body_by_http_id).
 
 /// Module-level bridge for `HTTPThread::init`. The real body lives in
 /// `_event_loop_draft` below (depends on `bun_event_loop::MiniEventLoop`,

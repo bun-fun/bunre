@@ -748,13 +748,6 @@ export const fetchH2Internals = {
   },
 };
 
-export const fetchH3Internals = {
-  liveCounts: $newRustFunction("http/H3Client.rs", "TestingAPIs.quicLiveCounts", 0) as () => {
-    sessions: number;
-    streams: number;
-  },
-};
-
 export const fileSinkInternals = {
   liveCount: $newRustFunction("runtime/webcore/FileSink.rs", "TestingAPIs.fileSinkLiveCount", 0) as () => number,
 };

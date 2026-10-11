@@ -281,7 +281,6 @@ pub struct RareData {
     // `s3_signing → jsc` hook.
     pub s3_default_client: Strong,
     /// Per-VM, like Node's quic `BindingData` (node/src/quic/bindingdata.h).
-    pub node_quic_callbacks: Strong,
     pub(crate) default_csrf_secret: Box<[u8]>,
 
     /// Owned NUL-terminated buffer. `len()` includes the trailing 0;
@@ -335,7 +334,6 @@ impl Default for RareData {
             websocket_inflate_scratch: None,
             libdeflate_decompressor: None,
             s3_default_client: Strong::empty(),
-            node_quic_callbacks: Strong::empty(),
             default_csrf_secret: Box::default(),
             tls_default_ciphers: None,
             spawn_sync_event_loop_: None,
@@ -658,7 +656,6 @@ macro_rules! for_each_socket_group {
 impl RareData {
     pub(crate) fn release_js_handles(&mut self) {
         self.s3_default_client.deinit();
-        self.node_quic_callbacks.deinit();
     }
 
     // ── trivial field accessors ────────────────────────────────────────────

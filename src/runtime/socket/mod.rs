@@ -87,7 +87,7 @@ pub use listener::Listener;
 pub use socket_address::SocketAddress;
 pub(crate) use socket_body::DuplexUpgradeContext;
 pub use socket_body::{
-    Flags as SocketFlags, NativeCallbacks, NewSocket, SocketMode, TCPSocket, TLSSocket,
+    Flags as SocketFlags, NewSocket, SocketMode, TCPSocket, TLSSocket,
 };
 
 #[cfg(windows)]

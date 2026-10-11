@@ -202,13 +202,6 @@ impl FileRoute {
         for (name, value) in names.iter().zip(values) {
             resp.write_header(sp_slice(*name, buf), sp_slice(*value, buf));
         }
-        if !matches!(resp, AnyResponse::H3(_)) {
-            if let Some(srv) = self.server.get() {
-                if let Some(alt) = srv.h3_alt_svc() {
-                    resp.write_header(b"alt-svc", alt);
-                }
-            }
-        }
 
         if !self.has_last_modified_header {
             // `Cell::take` then restore — `write_header` is a sync uWS buffer
@@ -560,7 +553,7 @@ pub(crate) fn write_any_status(resp: AnyResponse, status: u16) {
     match resp {
         AnyResponse::SSL(r) => crate::server::write_status::<true>(r, status),
         AnyResponse::TCP(r) => crate::server::write_status::<false>(r, status),
-        AnyResponse::H3(_) | AnyResponse::H2(_) => {
+        AnyResponse::H2(_) => {
             let mut b = bun_core::fmt::ItoaBuf::new();
             resp.write_status(bun_core::fmt::itoa(&mut b, status));
         }

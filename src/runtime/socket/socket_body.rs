@@ -89,7 +89,6 @@ pub(super) use super::handlers::Handlers;
 use std::rc::Rc;
 
 mod tls_socket_functions;
-use crate::api::bun::h2_frame_parser::H2FrameParser;
 use crate::api::bun_secure_context::SecureContext;
 
 bun_output::declare_scope!(Socket, visible);
@@ -327,7 +326,6 @@ pub struct NewSocket<const SSL: bool> {
     pub(crate) buffered_data_for_node_net: JsCell<Vec<u8>>,
     pub(crate) bytes_written: Cell<u64>,
 
-    pub(crate) native_callback: JsCell<NativeCallbacks>,
     /// `upgradeTLS` produces two `TLSSocket` wrappers over one
     /// `us_socket_t` (the encrypted view + the raw-bytes view node:net
     /// expects at index 0). The encrypted half holds a ref on the raw half
@@ -346,7 +344,6 @@ pub(super) type SocketHandler<const SSL: bool> = uws::NewSocketHandler<SSL>;
 impl<const SSL: bool> Drop for NewSocket<SSL> {
     fn drop(&mut self) {
         self.mark_inactive();
-        self.detach_native_callback();
         self.poll_ref.with_mut(|p| {
             p.unref(bun_io::posix_event_loop::get_vm_ctx(
                 bun_io::AllocatorType::Js,
@@ -562,19 +559,6 @@ impl<const SSL: bool> NewSocket<SSL> {
     }
 
     /// On `false` the rejected `callback` (and the ref it holds) is dropped.
-    pub(crate) fn attach_native_callback(&self, callback: NativeCallbacks) -> bool {
-        if !matches!(self.native_callback.get(), NativeCallbacks::None) {
-            return false;
-        }
-        self.native_callback.set(callback);
-        true
-    }
-
-    pub(crate) fn detach_native_callback(&self) {
-        if let NativeCallbacks::H2(h2) = self.native_callback.replace(NativeCallbacks::None) {
-            h2.on_native_close();
-        }
-    }
 
     /// Connect to `self.connection` (must be `Some`). Reads the field directly
     /// rather than taking it by-ref so the single caller in `connect_finish`
@@ -928,9 +912,6 @@ impl<const SSL: bool> NewSocket<SSL> {
             return Ok(());
         }
         if this.socket.get().is_detached() {
-            return Ok(());
-        }
-        if this.native_callback.get().on_writable() {
             return Ok(());
         }
         let handlers = this.get_handlers();
@@ -1327,7 +1308,6 @@ impl<const SSL: bool> NewSocket<SSL> {
             .with_mut(|b| b.clear_and_free());
 
         self.socket.set(SocketHandler::<SSL>::DETACHED);
-        self.detach_native_callback();
 
         socket.close(code);
     }
@@ -1354,7 +1334,6 @@ impl<const SSL: bool> NewSocket<SSL> {
         self.socket.set(SocketHandler::<SSL>::DETACHED);
         self.buffered_data_for_node_net
             .with_mut(|b| b.clear_and_free());
-        self.detach_native_callback();
         old.close(uws::CloseCode::Failure);
         self.poll_ref.with_mut(|p| p.unref(js_loop_ctx()));
         if self.flags.get().contains(Flags::IS_ACTIVE) {
@@ -2099,7 +2078,6 @@ impl<const SSL: bool> NewSocket<SSL> {
         // dispatches either. mark_inactive is not needed: handlers being
         // null means the previous teardown already ran it.
         if !this.has_handlers() {
-            this.detach_native_callback();
             this.socket.set(SocketHandler::<SSL>::DETACHED);
             this.get().deref();
             return Ok(());
@@ -2113,7 +2091,6 @@ impl<const SSL: bool> NewSocket<SSL> {
                 "C"
             }
         );
-        this.detach_native_callback();
         this.socket.set(SocketHandler::<SSL>::DETACHED);
         // The upgradeTLS raw twin shares the same us_socket_t so it never
         // gets its own dispatch — fire its (pre-upgrade) close handler
@@ -2201,9 +2178,6 @@ impl<const SSL: bool> NewSocket<SSL> {
         }
         this.socket.set(s);
         if this.socket.get().is_detached() {
-            return Ok(());
-        }
-        if this.native_callback.get().on_data(data)? {
             return Ok(());
         }
         let handlers = this.get_handlers();
@@ -2515,24 +2489,6 @@ impl<const SSL: bool> NewSocket<SSL> {
         } else {
             self.socket.get().write(buffer)
         }
-    }
-
-    /// Vectored raw write for plain-TCP sockets: all chunks reach the fd in one
-    /// writev. Callers guarantee this socket has no TLS layer (raw writes bypass
-    /// SSL framing). Updates bytes_written like the scalar path.
-    pub(crate) fn write_vectored_raw(&self, iov: &[bun_uws_sys::UsIoVec]) -> i32 {
-        let socket = self.socket.get();
-        if socket.is_shutdown() || socket.is_closed() {
-            return -1;
-        }
-        if SSL && self.flags.get().contains(Flags::REJECTED) {
-            return -1;
-        }
-        let res = socket.raw_writev(iov);
-        let uwrote: usize = usize::try_from(res.max(0)).expect("int cast");
-        self.bytes_written
-            .set(self.bytes_written.get() + uwrote as u64);
-        res
     }
 
     pub(crate) fn write_maybe_corked(&self, buffer: &[u8]) -> i32 {
@@ -3283,8 +3239,7 @@ impl<const SSL: bool> NewSocket<SSL> {
             self.socket.get().prepare_for_finalize();
             self.close_and_detach(uws::CloseCode::Failure);
         } else {
-            self.detach_native_callback();
-        }
+            }
     }
 
     #[bun_jsc::host_fn(method)]
@@ -3550,7 +3505,6 @@ impl<const SSL: bool> NewSocket<SSL> {
             ref_pollref_on_connect: Cell::new(true),
             buffered_data_for_node_net: JsCell::new(Vec::new()),
             bytes_written: Cell::new(0),
-            native_callback: JsCell::new(NativeCallbacks::None),
             twin: JsCell::new(None),
             verify_error: JsCell::new(None),
         });
@@ -3623,7 +3577,6 @@ impl<const SSL: bool> NewSocket<SSL> {
         // SAFETY: `this` owns the outstanding ref this guard consumes; the JS
         // wrapper's own +1 keeps the allocation alive across the whole call.
         let _guard = unsafe { RefPtr::from_raw(this.as_ctx_ptr()) };
-        this.detach_native_callback();
         this.socket.set(SocketHandler::<SSL>::DETACHED);
 
         // Only NOW is it safe for dispatch to fire: ext + kind point at `tls`.
@@ -3654,7 +3607,6 @@ impl<const SSL: bool> NewSocket<SSL> {
             ref_pollref_on_connect: Cell::new(true),
             buffered_data_for_node_net: JsCell::new(Vec::new()),
             bytes_written: Cell::new(0),
-            native_callback: JsCell::new(NativeCallbacks::None),
             twin: JsCell::new(None),
             verify_error: JsCell::new(None),
         });
@@ -4024,40 +3976,6 @@ macro_rules! impl_socket_js_class {
 }
 impl_socket_js_class!(TCPSocket, js_TCPSocket);
 impl_socket_js_class!(TLSSocket, js_TLSSocket);
-
-// ──────────────────────────────────────────────────────────────────────────
-// NativeCallbacks — direct callbacks on HTTP2 when available
-// ──────────────────────────────────────────────────────────────────────────
-
-pub enum NativeCallbacks {
-    H2(RefPtr<H2FrameParser>),
-    None,
-}
-
-impl NativeCallbacks {
-    /// `&self` borrows the socket's `JsCell<NativeCallbacks>`; the dispatch
-    /// re-enters JS, which can `detach_native_callback` and overwrite that cell.
-    /// Copy the parser pointer out first; the callee's `keepalive()` holds it.
-    /// `Ok(false)`: nothing attached, dispatch to the JS handlers.
-    pub(crate) fn on_data(&self, data: &[u8]) -> JsResult<bool> {
-        let h2 = match self {
-            NativeCallbacks::H2(h2) => h2.as_ptr(),
-            NativeCallbacks::None => return Ok(false),
-        };
-        // SAFETY: `on_native_read` takes a keepalive; `h2` stays live across re-entry.
-        unsafe { (*h2).on_native_read(data) }?;
-        Ok(true)
-    }
-    pub(crate) fn on_writable(&self) -> bool {
-        let h2 = match self {
-            NativeCallbacks::H2(h2) => h2.as_ptr(),
-            NativeCallbacks::None => return false,
-        };
-        // SAFETY: `on_native_writable` takes a keepalive; `h2` stays live across re-entry.
-        unsafe { (*h2).on_native_writable() };
-        true
-    }
-}
 
 // ──────────────────────────────────────────────────────────────────────────
 // WriteResult
@@ -4688,7 +4606,6 @@ pub fn js_upgrade_duplex_to_tls(
         ref_pollref_on_connect: Cell::new(true),
         buffered_data_for_node_net: JsCell::new(Vec::new()),
         bytes_written: Cell::new(0),
-        native_callback: JsCell::new(NativeCallbacks::None),
         twin: JsCell::new(None),
         verify_error: JsCell::new(None),
     });

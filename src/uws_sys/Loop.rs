@@ -213,22 +213,6 @@ impl PosixLoop {
         c::uws_get_loop()
     }
 
-    /// Packetize HTTP/3 stream writes that happened since the last
-    /// process_conns. Early-returns when nothing wrote, so safe to call
-    /// from drainMicrotasks without per-iteration cost.
-    pub fn drain_quic_if_necessary(&mut self) {
-        if !self.internal_loop_data.nq_head.is_null() {
-            // Full pass with close dispatch deferred to the next loop point.
-            // SAFETY: self is a valid loop pointer
-            unsafe { c::us_nq_loop_drain(self) };
-        }
-        if self.internal_loop_data.quic_head.is_null() {
-            return;
-        }
-        // SAFETY: self is a valid loop pointer
-        unsafe { c::us_quic_loop_flush_if_pending(self) };
-    }
-
     pub fn create<H: LoopHandler>() -> *mut Loop {
         // SAFETY: us_create_loop allocates and returns a new loop; null hint is valid
         let p = unsafe {
@@ -393,19 +377,6 @@ impl WindowsLoop {
         unsafe { c::us_loop_pump(self) };
     }
 
-    pub fn drain_quic_if_necessary(&mut self) {
-        if !self.internal_loop_data.nq_head.is_null() {
-            // Full pass with close dispatch deferred to the next loop point.
-            // SAFETY: self is a valid loop pointer
-            unsafe { c::us_nq_loop_drain(self) };
-        }
-        if self.internal_loop_data.quic_head.is_null() {
-            return;
-        }
-        // SAFETY: self is a valid loop pointer
-        unsafe { c::us_quic_loop_flush_if_pending(self) };
-    }
-
     pub fn create<H: LoopHandler>() -> *mut WindowsLoop {
         // SAFETY: us_create_loop allocates and returns a new loop; null hint is valid
         let p = unsafe {
@@ -501,8 +472,6 @@ mod c {
             ext_size: c_uint,
         ) -> *mut Loop;
         pub(super) fn us_loop_free(loop_: *mut Loop);
-        pub(super) fn us_quic_loop_flush_if_pending(loop_: *mut Loop);
-        pub(super) fn us_nq_loop_drain(loop_: *mut Loop);
         pub fn us_loop_run(loop_: *mut Loop);
         #[cfg(windows)]
         pub(super) fn us_loop_pump(loop_: *mut Loop);

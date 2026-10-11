@@ -3014,3 +3014,36 @@ void VersionSqlite3::closeIfDrained()
     }
     closeHandle();
 }
+
+// `process.versions.sqlite` reports the version of the library actually
+// loaded, which can differ from the bundled constant (lazy-load, or a
+// system sqlite on non-Windows). This lived in NodeSqlite.cpp; it describes
+// the shared library rather than the node:sqlite API, so it moved here when
+// node:sqlite was removed.
+extern "C" const char* Bun__sqlite3_version()
+{
+#if LAZY_LOAD_SQLITE
+    if (sqlite3_handle && lazy_sqlite3_libversion)
+        return lazy_sqlite3_libversion();
+#endif
+#if !OS(WINDOWS)
+    static const char* probed = []() -> const char* {
+        void* h = dlopen(sqlite3_lib_path, RTLD_LAZY | RTLD_LOCAL);
+        if (!h) return nullptr;
+        auto fn = reinterpret_cast<const char* (*)()>(dlsym(h, "sqlite3_libversion"));
+        const char* out = nullptr;
+        if (fn) {
+            static char buf[24];
+            const char* v = fn();
+            size_t n = v ? strnlen(v, sizeof(buf) - 1) : 0;
+            memcpy(buf, v, n);
+            buf[n] = '\0';
+            out = buf;
+        }
+        dlclose(h);
+        return out;
+    }();
+    if (probed) return probed;
+#endif
+    return SQLITE_VERSION;
+}

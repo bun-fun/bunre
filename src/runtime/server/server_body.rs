@@ -87,7 +87,7 @@ impl<ThisServer, const SSL: bool, const DBG: bool> RequestCtx
 where
     NewRequestContext<ThisServer, SSL, DBG, true>: super::any_request_context::CtxKind,
 {
-    type Req = uws_sys::h3::Request;
+    type Req = uws_sys::http_request::Request;
     const IS_MUX: bool = true;
 }
 
@@ -307,10 +307,10 @@ impl ReqLike for uws_sys::Request {
         uws_sys::Request::set_yield(self, y)
     }
 }
-impl ReqLike for uws_sys::h3::Request {
+impl ReqLike for uws_sys::http_request::Request {
     #[inline]
     fn header(&mut self, name: &[u8]) -> Option<&[u8]> {
-        uws_sys::h3::Request::header(self, name)
+        uws_sys::http_request::Request::header(self, name)
     }
     /// HTTP/3 has no transfer codings (RFC 9114 4.2): the body ends at the
     /// QUIC stream FIN, and a request that carries the header is rejected
@@ -321,15 +321,15 @@ impl ReqLike for uws_sys::h3::Request {
     }
     #[inline]
     fn method(&mut self) -> &[u8] {
-        uws_sys::h3::Request::method(self)
+        uws_sys::http_request::Request::method(self)
     }
     #[inline]
     fn url(&mut self) -> &[u8] {
-        uws_sys::h3::Request::url(self)
+        uws_sys::http_request::Request::url(self)
     }
     #[inline]
     fn set_yield(&mut self, y: bool) {
-        uws_sys::h3::Request::set_yield(self, y)
+        uws_sys::http_request::Request::set_yield(self, y)
     }
 }
 
@@ -385,38 +385,6 @@ impl<const SSL: bool> RespLike for uws_sys::NewAppResponse<SSL> {
                 std::ptr::from_mut::<Self>(self).cast::<uws_sys::NewAppResponse<false>>(),
             )
         }
-    }
-}
-impl RespLike for uws_sys::h3::Response {
-    const IS_MUX: bool = true;
-    /// The QUIC FIN is only seen by a read after dispatch.
-    #[inline]
-    fn request_body_ended(&mut self) -> bool {
-        false
-    }
-    #[inline]
-    fn write_status(&mut self, s: &[u8]) {
-        uws_sys::h3::Response::write_status(self, s)
-    }
-    #[inline]
-    fn end_without_body(&mut self, c: bool) {
-        uws_sys::h3::Response::end_without_body(self, c)
-    }
-    #[inline]
-    fn timeout(&mut self, s: u8) {
-        uws_sys::h3::Response::timeout(self, s)
-    }
-    #[inline]
-    fn on_timeout_warn(&mut self, ud: *mut c_void) {
-        uws_sys::h3::Response::on_timeout(
-            self,
-            |_: &mut c_void, _: &mut uws_sys::h3::Response| on_timeout_for_idle_warn(),
-            ud,
-        );
-    }
-    #[inline]
-    fn to_any_response(&mut self) -> uws::AnyResponse {
-        uws::AnyResponse::from(std::ptr::from_mut::<Self>(self))
     }
 }
 impl RespLike for uws_sys::h2::Response {
@@ -2468,14 +2436,6 @@ where
                 return JSValue::js_number(p as f64);
             }
         }
-        if Self::HAS_H3 {
-            if let Some(h3l) = self.h3_listener {
-                // S008: `h3::ListenSocket` is an `opaque_ffi!` ZST — safe deref.
-                if let Some(p) = bun_opaque::opaque_deref_mut(h3l).get_local_port() {
-                    return JSValue::js_number(p as f64);
-                }
-            }
-        }
         JSValue::js_number(config_port as f64)
     }
 
@@ -2520,25 +2480,6 @@ where
                         }
                     };
                     return addr.into_dto(&self.global());
-                }
-                if Self::HAS_H3 {
-                    if let Some(h3l) = self.h3_listener {
-                        // S008: `h3::ListenSocket` is an `opaque_ffi!` ZST — safe deref.
-                        let h3l = bun_opaque::opaque_deref_mut(h3l);
-                        port = h3l.get_local_port().unwrap_or(port);
-                        let mut buf = [0u8; 64];
-                        let Some(address_bytes) = h3l.get_local_address(&mut buf) else {
-                            return Ok(JSValue::NULL);
-                        };
-                        let addr = match SocketAddress::init(address_bytes, port) {
-                            Ok(a) => a,
-                            Err(_) => {
-                                bun_core::hint::cold();
-                                return Ok(JSValue::NULL);
-                            }
-                        };
-                        return addr.into_dto(&self.global());
-                    }
                 }
                 let _ = port;
                 Ok(JSValue::NULL)
@@ -2642,7 +2583,11 @@ where
 
     /// Route handler for the HTTP/2 and HTTP/3 apps (`R` = `uws::H2::Response`
     /// or `uws::H3::Response`); both hand us the same decoded-header request.
-    pub(super) fn on_mux_request<R: RespLike>(&mut self, req: &mut uws::H3::Request, resp: &mut R) {
+    pub(super) fn on_mux_request<R: RespLike>(
+        &mut self,
+        req: &mut uws::http_request::Request,
+        resp: &mut R,
+    ) {
         if self.config.on_request.is_empty() {
             return Self::on_mux_404(self, req, resp);
         }
@@ -2651,7 +2596,7 @@ where
 
     pub(super) fn on_mux_user_route_request<R: RespLike>(
         user_route: &mut UserRoute<SSL, DEBUG>,
-        req: &mut uws::H3::Request,
+        req: &mut uws::http_request::Request,
         resp: &mut R,
     ) {
         Self::on_user_route_request_for::<ServerMuxRequestContext<SSL, DEBUG>, _>(
@@ -2661,7 +2606,7 @@ where
 
     pub(super) fn on_mux_404<R: RespLike>(
         _this: &mut Self,
-        _req: &mut uws::H3::Request,
+        _req: &mut uws::http_request::Request,
         resp: &mut R,
     ) {
         resp.write_status(b"404 Not Found");

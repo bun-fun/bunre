@@ -31,7 +31,7 @@ pub use bun_uws_sys::{
 /// hook, so no `catch_unwind` wrapper is emitted.
 pub use bun_jsc_macros::uws_callback;
 pub use bun_uws_sys::response::State;
-pub use bun_uws_sys::{h2 as H2, h3 as H3, quic, socket_transfer, udp, vtable};
+pub use bun_uws_sys::{h2 as H2, http_request, socket_transfer, udp, vtable};
 pub type Socket = us_socket_t;
 
 /// Bare BoringSSL `SSL_CTX`. `SSL_CTX_up_ref`/`SSL_CTX_free` is the refcount;
@@ -55,7 +55,6 @@ pub enum ResponseKind {
     Tcp = 0,
     Ssl = 1,
     H2 = 2,
-    H3 = 3,
 }
 
 impl ResponseKind {
@@ -65,7 +64,6 @@ impl ResponseKind {
             AnyResponse::TCP(_) => ResponseKind::Tcp,
             AnyResponse::SSL(_) => ResponseKind::Ssl,
             AnyResponse::H2(_) => ResponseKind::H2,
-            AnyResponse::H3(_) => ResponseKind::H3,
         }
     }
 }

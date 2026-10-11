@@ -620,9 +620,6 @@ pub type TLSResponse = Response<true>;
 // SAFETY: `Response<SSL>` is a `#[repr(C)]` ZST (`UnsafeCell<[u8; 0]>`) with
 // align 1; C++ owns the real bytes.
 unsafe impl<const SSL: bool> OpaqueHandle for Response<SSL> {}
-// SAFETY: `h3::Response` is a `#[repr(C)]` ZST (`UnsafeCell<[u8; 0]>`) with
-// align 1; C++ owns the real bytes.
-unsafe impl OpaqueHandle for H3Response {}
 // SAFETY: as above for `h2::Response`.
 unsafe impl OpaqueHandle for H2Response {}
 
@@ -630,7 +627,6 @@ unsafe impl OpaqueHandle for H2Response {}
 pub enum AnyResponse {
     SSL(*mut TLSResponse),
     TCP(*mut TCPResponse),
-    H3(*mut H3Response),
     H2(*mut H2Response),
 }
 
@@ -651,10 +647,6 @@ macro_rules! any_dispatch {
                 let $r = TCPResponse::as_handle(ptr);
                 $body
             }
-            AnyResponse::H3(ptr) => {
-                let $r = H3Response::as_handle(ptr);
-                $body
-            }
             AnyResponse::H2(ptr) => {
                 let $r = H2Response::as_handle(ptr);
                 $body
@@ -664,10 +656,10 @@ macro_rules! any_dispatch {
 }
 
 /// Stamp the per-variant ZST adapter triplet and register it via the matching
-/// `Response<SSL>` / `H3Response` `$method`.
+/// `Response<SSL>` / `H2Response` `$method`.
 /// Each arm is a generic fn *item* monomorphized over `<U, H>`,
 /// so it is itself a ZST satisfying both the `Response<SSL>` bound
-/// (`Fn(*mut U, …)`) and the `H3Response` bound (`Fn(&mut U, …)`). The H3 arm
+/// (`Fn(*mut U, …)`) and the `H2Response` bound (`Fn(&mut U, …)`). The H2 arm
 /// bridges its `&mut U` to the body's uniform `*mut U` via `ptr::from_mut`.
 ///
 /// Syntax:
@@ -676,8 +668,8 @@ macro_rules! any_dispatch {
 ///       <U, H: [bounds…]>
 ///       |u $(, pre: PreTy)* ; r, any $(, post: PostTy)*| -> Ret { body }
 ///   }
-/// - `u` is bound as `*mut U` in the body (H3's `&mut U` is rebound).
-/// - `r` is the typed `&mut {TLS,TCP,H3}Response` param; `any` is the
+/// - `u` is bound as `*mut U` in the body (H2's `&mut U` is rebound).
+/// - `r` is the typed `&mut {TLS,TCP,H2}Response` param; `any` is the
 ///   `AnyResponse` re-wrap of `r`. Underscore-prefix either if unused.
 macro_rules! any_response_register_cb {
     (
@@ -695,11 +687,6 @@ macro_rules! any_response_register_cb {
             let $any = AnyResponse::TCP(std::ptr::from_mut($r));
             $($body)*
         }
-        fn h3<$U, $H: $($bound)*>($u: &mut $U $(, $pre: $pre_ty)*, $r: &mut H3Response $(, $post: $post_ty)*) -> $ret {
-            let $u = std::ptr::from_mut::<$U>($u);
-            let $any = AnyResponse::H3(std::ptr::from_mut($r));
-            $($body)*
-        }
         fn h2<$U, $H: $($bound)*>($u: &mut $U $(, $pre: $pre_ty)*, $r: &mut H2Response $(, $post: $post_ty)*) -> $ret {
             let $u = std::ptr::from_mut::<$U>($u);
             let $any = AnyResponse::H2(std::ptr::from_mut($r));
@@ -708,7 +695,6 @@ macro_rules! any_response_register_cb {
         match $self {
             AnyResponse::SSL(ptr) => TLSResponse::as_handle(ptr).$method(ssl::<$U, $H>, $opt_data),
             AnyResponse::TCP(ptr) => TCPResponse::as_handle(ptr).$method(tcp::<$U, $H>, $opt_data),
-            AnyResponse::H3(ptr) => H3Response::as_handle(ptr).$method(h3::<$U, $H>, $opt_data),
             AnyResponse::H2(ptr) => H2Response::as_handle(ptr).$method(h2::<$U, $H>, $opt_data),
         }
     }};
@@ -719,7 +705,7 @@ impl AnyResponse {
         match self {
             AnyResponse::SSL(resp) => resp,
             AnyResponse::TCP(_) => panic!("Expected SSL response, got TCP response"),
-            AnyResponse::H3(_) | AnyResponse::H2(_) => {
+            AnyResponse::H2(_) => {
                 panic!("Expected SSL response, got a stream response")
             }
         }
@@ -729,7 +715,7 @@ impl AnyResponse {
         match self {
             AnyResponse::SSL(_) => panic!("Expected TCP response, got SSL response"),
             AnyResponse::TCP(resp) => resp,
-            AnyResponse::H3(_) | AnyResponse::H2(_) => {
+            AnyResponse::H2(_) => {
                 panic!("Expected TCP response, got a stream response")
             }
         }
@@ -763,7 +749,7 @@ impl AnyResponse {
 
     pub fn socket(self) -> *mut c::uws_res {
         match self {
-            AnyResponse::H3(_) | AnyResponse::H2(_) => {
+            AnyResponse::H2(_) => {
                 panic!("socket() is only available for HTTP/1 responses")
             }
             AnyResponse::SSL(ptr) => TLSResponse::as_handle(ptr).downcast(),
@@ -780,7 +766,6 @@ impl AnyResponse {
         match self {
             AnyResponse::SSL(ptr) => ptr.cast::<c_void>(),
             AnyResponse::TCP(ptr) => ptr.cast::<c_void>(),
-            AnyResponse::H3(ptr) => ptr.cast::<c_void>(),
             AnyResponse::H2(ptr) => ptr.cast::<c_void>(),
         }
     }
@@ -902,14 +887,13 @@ impl AnyResponse {
                 us_socket_t::opaque_mut(TCPResponse::as_handle(ptr).downcast_socket())
                     .close(crate::us_socket::CloseCode::failure);
             }
-            AnyResponse::H3(ptr) => H3Response::as_handle(ptr).force_close(),
             AnyResponse::H2(ptr) => H2Response::as_handle(ptr).force_close(),
         }
     }
 
     pub fn get_native_handle(self) -> Fd {
         match self {
-            AnyResponse::H3(_) | AnyResponse::H2(_) => bun_core::Fd::INVALID,
+            AnyResponse::H2(_) => bun_core::Fd::INVALID,
             AnyResponse::SSL(ptr) => TLSResponse::as_handle(ptr).get_native_handle(),
             AnyResponse::TCP(ptr) => TCPResponse::as_handle(ptr).get_native_handle(),
         }
@@ -1036,7 +1020,7 @@ impl AnyResponse {
             // server.upgrade() returns false before reaching here for H3
             // (request_context.get(RequestContext) is null — the H3 ctx is a
             // different type and upgrade_context is never set).
-            AnyResponse::H3(_) | AnyResponse::H2(_) => unreachable!(),
+            AnyResponse::H2(_) => unreachable!(),
             AnyResponse::SSL(ptr) => TLSResponse::as_handle(ptr).upgrade(
                 data,
                 sec_web_socket_key,
@@ -1067,12 +1051,6 @@ impl From<*mut TCPResponse> for AnyResponse {
         AnyResponse::TCP(r)
     }
 }
-impl From<*mut H3Response> for AnyResponse {
-    #[inline]
-    fn from(r: *mut H3Response) -> Self {
-        AnyResponse::H3(r)
-    }
-}
 impl From<*mut H2Response> for AnyResponse {
     #[inline]
     fn from(r: *mut H2Response) -> Self {
@@ -1080,7 +1058,6 @@ impl From<*mut H2Response> for AnyResponse {
     }
 }
 
-pub(crate) type H3Response = crate::h3::Response;
 pub(crate) type H2Response = crate::h2::Response;
 
 bitflags::bitflags! {

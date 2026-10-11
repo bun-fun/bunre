@@ -1054,7 +1054,7 @@ unsafe extern "C" {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Extern functions — TLS context/session setup for QUIC (node:quic)
+// Extern functions — TLS context/session setup for QUIC
 // ═══════════════════════════════════════════════════════════════════════════
 
 opaque!(

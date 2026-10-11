@@ -47,10 +47,8 @@ pub mod hash_object;
 pub mod html_rewriter;
 #[path = "api/js_bundle_completion_task.rs"]
 pub mod js_bundle_completion_task;
-#[path = "api/JSBundler.rs"]
+#[path = "api/bundler_plugin.rs"]
 pub mod js_bundler;
-#[path = "api/JSTranspiler.rs"]
-pub mod js_transpiler;
 #[path = "api/JSON5Object.rs"]
 pub mod json5_object;
 #[path = "api/JSONCObject.rs"]
@@ -98,14 +96,6 @@ pub mod js_bun_spawn_bindings;
 #[path = "api/bun/Terminal.rs"]
 pub mod bun_terminal_body;
 
-// H2FrameParser — ~338 jsc refs (Strong, JsRef, host_fn getters, AbortSignal).
-// From-scratch node:http2 engine rewrite (will replace h2_frame_parser.rs).
-#[path = "api/bun/h2/mod.rs"]
-pub mod h2;
-
-#[path = "api/bun/h2_frame_parser.rs"]
-pub mod h2_frame_parser_body;
-
 #[path = "api/bun/SSLContextCache.rs"]
 pub mod bun_ssl_context_cache;
 
@@ -126,15 +116,8 @@ pub mod bun {
         pub use crate::api::bun_terminal_body::Terminal;
     }
     pub use terminal::Terminal;
-
-    pub mod h2_frame_parser {
-        pub use crate::api::h2_frame_parser_body::H2FrameParser;
-        // js2native thunk (`$rust(h2_frame_parser.rs, …)` in generated_js2native.rs).
-        pub(crate) use crate::api::h2_frame_parser_body::h2_frame_parser_constructor;
-    }
 }
 
-pub use crate::api::bun::h2_frame_parser::H2FrameParser;
 pub use crate::api::bun::ssl_context_cache as SSLContextCache;
 pub use crate::api::filesystem_router::FileSystemRouter;
 pub use crate::api::filesystem_router::MatchedRoute;

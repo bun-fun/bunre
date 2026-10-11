@@ -12,7 +12,6 @@
 #include "JSFetchHeaders.h"
 #include "HTTPLatin1String.h"
 #include <bun-uws/src/App.h>
-#include <bun-uws/src/Http3Response.h>
 #include <bun-uws/src/Http2Context.h>
 #include "ZigGeneratedClasses.h"
 #include "ScriptExecutionContext.h"
@@ -832,7 +831,7 @@ JSValue createNodeHTTPInternalBinding(Zig::GlobalObject* globalObject)
     return obj;
 }
 
-/* Http2Response and Http3Response share this surface: headers are buffered
+/* Http2Response shares this surface with the h1 response types: headers are buffered
  * as a list and framed by the transport, so there is no Transfer-Encoding. */
 template<typename Response, typename ResponseData>
 static void writeFetchHeadersToStreamResponse(WebCore::FetchHeaders& headers, Response* res)
@@ -883,9 +882,6 @@ extern "C" void WebCore__FetchHeaders__toUWSResponse(WebCore::FetchHeaders* arg0
         break;
     case UWSResponseKind::H2:
         writeFetchHeadersToStreamResponse<uWS::Http2Response, uWS::Http2ResponseData>(*arg0, reinterpret_cast<uWS::Http2Response*>(arg2));
-        break;
-    case UWSResponseKind::H3:
-        writeFetchHeadersToStreamResponse<uWS::Http3Response, uWS::Http3ResponseData>(*arg0, reinterpret_cast<uWS::Http3Response*>(arg2));
         break;
     }
 }

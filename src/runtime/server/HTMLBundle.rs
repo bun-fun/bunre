@@ -222,9 +222,8 @@ impl Route {
 
         if server.config().is_development() {
             if let Some(dev) = server.dev_server_mut() {
-                // DevServer's HMR path is *uws.Request-typed; H3 isn't routed
-                // there (no h3_app on plain-HTTP debug servers in practice),
-                // but stay defensive.
+                // DevServer's HMR path is *uws.Request-typed, so only h1 requests
+                // are routed there.
                 match req {
                     AnyRequest::H1(h1) => {
                         // S008: `uws::Request` is an `opaque_ffi!` ZST — safe deref.
@@ -234,10 +233,7 @@ impl Route {
                             resp,
                         ));
                     }
-                    AnyRequest::H3(_) => {
-                        resp.write_status(b"503 Service Unavailable");
-                        resp.end(b"DevServer HMR is HTTP/1.1 only", true);
-                    }
+                    _ => {}
                 }
                 return;
             }

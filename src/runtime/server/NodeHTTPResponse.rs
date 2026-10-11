@@ -1128,7 +1128,7 @@ fn write_head_internal(
     let (write_head, response): (WriteHead, *mut c_void) = match response {
         uws::AnyResponse::TCP(tcp) => (NodeHTTPServer__writeHead_http, (*tcp).cast::<c_void>()),
         uws::AnyResponse::SSL(ssl) => (NodeHTTPServer__writeHead_https, (*ssl).cast::<c_void>()),
-        uws::AnyResponse::H3(_) | uws::AnyResponse::H2(_) => {
+        uws::AnyResponse::H2(_) => {
             bun_core::Output::panic(format_args!("node:http responses are always HTTP/1"));
         }
     };

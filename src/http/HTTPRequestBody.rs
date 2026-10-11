@@ -61,10 +61,6 @@ impl<'a> HTTPRequestBody<'a> {
         }
     }
 
-    pub(crate) fn is_stream(&self) -> bool {
-        matches!(self, HTTPRequestBody::Stream(_))
-    }
-
     /// Borrow the in-memory byte payload, if any. `Sendfile` / `Stream` have no
     /// contiguous slice and return `b""` (callers branch on the variant before
     /// reaching for this).

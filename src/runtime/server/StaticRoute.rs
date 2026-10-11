@@ -426,7 +426,7 @@ impl StaticRoute {
         match resp {
             AnyResponse::SSL(r) => write_status::<true>(r, status),
             AnyResponse::TCP(r) => write_status::<false>(r, status),
-            AnyResponse::H3(_) | AnyResponse::H2(_) => {
+            AnyResponse::H2(_) => {
                 let mut b = bun_core::fmt::ItoaBuf::new();
                 resp.write_status(bun_core::fmt::itoa(&mut b, status));
             }
@@ -451,13 +451,6 @@ impl StaticRoute {
                 &buf[name.offset as usize..][..name.length as usize],
                 &buf[value.offset as usize..][..value.length as usize],
             );
-        }
-        if !matches!(resp, AnyResponse::H3(_)) {
-            if let Some(srv) = self.server.get() {
-                if let Some(alt) = srv.h3_alt_svc() {
-                    resp.write_header(b"alt-svc", alt);
-                }
-            }
         }
     }
 

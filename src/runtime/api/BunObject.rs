@@ -127,9 +127,6 @@ mod static_adapters {
         crate::api::js_bun_spawn_bindings::spawn_sync(g, a0, a1)
     }
 
-    pub(super) fn js_bundler_build(g: &JSGlobalObject, cf: &CallFrame) -> JsResult<JSValue> {
-        crate::api::js_bundler::JSBundler::build_fn(g, cf)
-    }
     /// `Bun.$` parsed-script constructor — wraps the marked-argument-buffer host fn.
     pub(super) fn parsed_shell_script_create(
         g: &JSGlobalObject,
@@ -246,7 +243,6 @@ pub mod bun_object {
     // --- Callbacks ---
     export_callbacks! {
         BunObject_callback_allocUnsafe => super::alloc_unsafe,
-        BunObject_callback_build => super::static_adapters::js_bundler_build,
         BunObject_callback_color => bun_css_jsc::js_function_color,
         BunObject_callback_connect => super::static_adapters::listener_connect,
         BunObject_callback_deflateSync => JSZlib::deflate_sync,
@@ -307,7 +303,6 @@ pub mod bun_object {
         BunObject_lazyPropCb_JSON5 => super::get_json5_object,
         BunObject_lazyPropCb_XML => super::get_xml_object,
         BunObject_lazyPropCb_YAML => super::get_yaml_object,
-        BunObject_lazyPropCb_Transpiler => super::get_transpiler_constructor,
         BunObject_lazyPropCb_argv => super::get_argv,
         BunObject_lazyPropCb_cron => super::get_cron_object,
         BunObject_lazyPropCb_cwd => super::get_cwd,
@@ -1673,10 +1668,6 @@ fn mmap_file(global_this: &JSGlobalObject, callframe: &CallFrame) -> JsResult<JS
             )
         }
     }
-}
-
-fn get_transpiler_constructor(global_this: &JSGlobalObject, _: &JSObject) -> JSValue {
-    jsc::codegen::js::get_constructor::<crate::api::js_transpiler::JSTranspiler>(global_this)
 }
 
 fn get_file_system_router(global_this: &JSGlobalObject, _: &JSObject) -> JSValue {

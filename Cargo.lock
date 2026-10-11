@@ -731,7 +731,6 @@ dependencies = [
  "bun_options_types",
  "bun_paths",
  "bun_ptr",
- "bun_react_compiler",
  "bun_url",
  "bun_wyhash",
  "bytemuck",
@@ -864,13 +863,6 @@ dependencies = [
  "bun_wyhash",
  "libc",
  "strum",
-]
-
-[[package]]
-name = "bun_lsquic_sys"
-version = "0.0.0"
-dependencies = [
- "bun_core",
 ]
 
 [[package]]
@@ -1032,19 +1024,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bun_react_compiler"
-version = "0.0.0"
-dependencies = [
- "bun_alloc",
- "bun_ast",
- "bun_collections",
- "bun_core",
- "enumset",
- "rustc-hash",
- "smallvec",
-]
-
-[[package]]
 name = "bun_resolve_builtins"
 version = "0.0.0"
 dependencies = [
@@ -1161,7 +1140,6 @@ dependencies = [
  "bun_jsc",
  "bun_libdeflate_sys",
  "bun_libuv_sys",
- "bun_lsquic_sys",
  "bun_md",
  "bun_opaque",
  "bun_options_types",

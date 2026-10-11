@@ -3,6 +3,7 @@
 #![warn(unused_must_use)]
 pub mod error;
 pub use error::{CertError, Error, Result};
+
 #[path = "AsyncHTTP.rs"]
 pub mod async_http;
 #[path = "CertificateInfo.rs"]
@@ -13,8 +14,6 @@ pub mod decompressor;
 #[path = "H2Client.rs"]
 pub mod h2_client;
 pub use bun_http_types::h2 as h2_frame_parser;
-#[path = "H3Client.rs"]
-pub mod h3_client;
 #[path = "HeaderBuilder.rs"]
 pub mod header_builder;
 #[path = "HeaderValueIterator.rs"]
@@ -76,8 +75,6 @@ pub use bun_uws::ssl_wrapper;
 // `NewHTTPContext`; alias all spellings to the canonical types so submodules
 // resolve without churn.
 pub use h2_client as h2;
-pub use h3_client as h3;
-pub use h3_client as H3;
 pub type NewHTTPContext<const SSL: bool> = http_context::HTTPContext<SSL>;
 pub type NewHttpContext<const SSL: bool> = http_context::HTTPContext<SSL>;
 pub(crate) type HttpsContext = http_context::HTTPContext<true>;
@@ -203,7 +200,6 @@ pub struct Flags {
     pub(crate) upgrade_state: HTTPUpgradeState,
     pub(crate) protocol: Protocol,
     pub forced_protocol: Option<Protocol>,
-    pub(crate) h3_retried: bool,
     pub is_node_http_client: bool,
 }
 
@@ -225,7 +221,6 @@ impl Default for Flags {
             upgrade_state: HTTPUpgradeState::None,
             protocol: Protocol::Http1_1,
             forced_protocol: None,
-            h3_retried: false,
             is_node_http_client: false,
         }
     }
@@ -347,25 +342,12 @@ const PREALLOCATE_MAX: usize = 1024 * 1024 * 256;
 /// bounded for long-lived streaming responses.
 pub const DECODED_BODY_RETAIN_CAP: usize = 512 * 1024;
 
-/// Whether the experimental Alt-Svc-driven HTTP/3 upgrade is enabled at all
-/// (CLI flag or env var). Used on its own to gate `H3.AltSvc.record` — a
-/// response that arrived over a request shape h3 can't serve (proxy, sendfile,
-/// pinned to h1) still carries an authoritative Alt-Svc for the origin.
-pub(crate) fn h3_alt_svc_enabled() -> bool {
-    // SAFETY: set once at startup before HTTP thread spawns; only read thereafter.
-    let cli = EXPERIMENTAL_HTTP3_CLIENT_FROM_CLI.load(Ordering::Relaxed);
-    cli || bun_core::env_var::feature_flag::BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP3_CLIENT
-        .get()
-        .unwrap_or(false)
-}
-
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum ShouldContinue {
     ContinueStreaming,
     Finished,
 }
 
-/// Return of `apply_headers` in the h2/h3 client sessions: did the headers
 /// terminate the response (HEAD, 204/304, END_STREAM) or is a body expected?
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub(crate) enum HeaderResult {
@@ -374,11 +356,9 @@ pub(crate) enum HeaderResult {
 }
 
 impl HTTPClient<'_> {
-    /// Shared body of `apply_headers` for the h2/h3 client sessions: hand a
     /// pre-decoded multiplexed response (HPACK / QPACK) to the HTTP/1.1
     /// metadata pipeline (`handle_response_metadata` + `clone_metadata`), then
     /// undo the HTTP/1.1-specific framing decisions that don't apply when the
-    /// transport delimits the body (h2 DATA frames / h3 STREAM frames).
     ///
     /// Returns the (possibly-mutated) response so the caller can pass it to
     /// `clone_metadata` once the redirect decision has been made; the borrow of
@@ -398,7 +378,6 @@ impl HTTPClient<'_> {
             bytes_read: 0,
         };
         let should_continue = self.handle_response_metadata(&mut response)?;
-        // h2/h3 framing delimits the body; chunked transfer-encoding and the
         // HTTP/1.x persistence rules (no Content-Length ⇒ no keep-alive, and the
         // HTTP/1.0 default that the synthetic `minor_version: 0` above trips)
         // don't apply.
@@ -773,7 +752,6 @@ fn no_proxy_matches(no_proxy_text: &[u8], hostname: &[u8], host: &[u8]) -> bool 
 // `if_modified_since`, `unix_socket_path`, and the borrowed
 // `HTTPRequestBody::Bytes` payload — to the caller's storage. The original port erased these to `'static`
 // and lifetime-erased at every call site; threading the lifetime removes that hazard.
-// Intrusive raw-pointer backrefs (socket ext, h2/h3 streams) store the
 // lifetime-erased `HTTPClient<'static>` form via [`HTTPClient::as_erased_ptr`].
 pub struct HTTPClient<'a> {
     pub(crate) method: Method,
@@ -835,7 +813,6 @@ pub struct HTTPClient<'a> {
     pub(crate) h2: Option<NonNull<h2::Stream>>,
     /// Set when this request is bound to an HTTP/3 stream. Owned by the H3
     /// session; cleared by the session when the stream completes.
-    pub(crate) h3: Option<NonNull<h3::Stream>>,
     /// Set while this request is the leader of a fresh TLS connect that other
     /// h2-capable requests have coalesced onto. Resolved (and freed) once ALPN
     /// is known or the connect fails. Backref into the owning
@@ -845,13 +822,11 @@ pub struct HTTPClient<'a> {
     pub(crate) async_http_id: u32,
     pub(crate) unix_socket_path: &'a [u8],
     /// `fetch({ compress })` — when set, the body is compressed lazily at
-    /// write time (h1: `send_initial_request_payload`; h2/h3: at attach) so
     /// the output can borrow `LibdeflateState::shared_buffer`. Persists across
     /// redirects/retries so each hop re-compresses from the original
     /// `state.original_request_body`.
     pub(crate) compress: Option<compress_body::CompressOption>,
     /// Backing storage for the compressed body when it must outlive a single
-    /// synchronous write (output > shared buffer, partial h1 write, or h2/h3
     /// frame encoding). Empty in the common one-write h1 case.
     pub(crate) compressed_request_body: Vec<u8>,
     /// Compressed length for `Content-Length`; 0 when `compress` is None or
@@ -861,7 +836,6 @@ pub struct HTTPClient<'a> {
 
 impl<'a> HTTPClient<'a> {
     /// Erase the borrow lifetime for storage in intrusive data structures
-    /// (socket ext slots, h2/h3 stream backrefs, proxy-tunnel ctx). Lifetimes
     /// are a compile-time fiction on raw pointers; consumers re-derive a
     /// short-lived `&mut` when accessing. Centralizing the cast keeps every
     /// such erasure auditable at one definition.
@@ -876,7 +850,6 @@ impl<'a> HTTPClient<'a> {
     ///
     /// INVARIANT: every `NonNull<HTTPClient<'static>>` reaching here is a
     /// back-ref produced by `as_erased_ptr` and stored in an intrusive
-    /// container (h2/h3 `Stream.client`, `PendingConnect.waiters`,
     /// `ClientSession.pending_attach`, socket ext slots) whose holder is
     /// strictly outlived by the `HTTPClient`'s embedding `AsyncHTTP`. All such
     /// access is HTTP-thread-only, so the returned `&mut` is the sole live
@@ -1965,51 +1938,6 @@ impl<'a> HTTPClient<'a> {
         }
     }
 
-    /// Whether this request shape is eligible to *use* a cached Alt-Svc h3
-    /// alternative (HTTPS, no proxy/unix-socket, no sendfile, not pinned to a
-    /// specific protocol). When true, `start_()` consults `H3.AltSvc.lookup`
-    /// before opening TCP.
-    pub(crate) fn can_try_h3_alt_svc(&self) -> bool {
-        // The h3 client never routes through `check_server_identity`, so a JS
-        // `checkServerIdentity` callback could never run; stay on TCP.
-        if self.signals.get(signals::Field::CertErrors) {
-            return false;
-        }
-        if matches!(
-            self.flags.forced_protocol,
-            Some(Protocol::Http1_1 | Protocol::Http2)
-        ) {
-            return false;
-        }
-        if self.http_proxy.is_some() {
-            return false;
-        }
-        if self.flags.is_preconnect_only {
-            return false;
-        }
-        if !self.unix_socket_path.is_empty() {
-            return false;
-        }
-        if matches!(
-            self.state.original_request_body,
-            HTTPRequestBody::Sendfile(_)
-        ) {
-            return false;
-        }
-        if self.has_tls_options_unsupported_by_h3() {
-            return false;
-        }
-        h3_alt_svc_enabled()
-    }
-
-    fn has_tls_options_unsupported_by_h3(&self) -> bool {
-        self.signals.get(signals::Field::CertErrors)
-            || self
-                .tls_props
-                .as_ref()
-                .is_some_and(|tls| tls.get().requires_custom_request_ctx)
-    }
-
     pub(crate) fn first_call<const IS_SSL: bool>(&mut self, socket: HttpSocket<IS_SSL>) {
         if FeatureFlags::IS_FETCH_PRECONNECT_SUPPORTED {
             if self.flags.is_preconnect_only {
@@ -2087,7 +2015,6 @@ impl<'a> HTTPClient<'a> {
     /// only the request fails.
     pub(crate) fn fail_from_h2(&mut self, err: crate::Error) {
         debug_assert!(self.h2.is_none());
-        debug_assert!(self.h3.is_none());
         self.unregister_abort_tracker();
         if self.state.stage != Stage::Done && self.state.stage != Stage::Fail {
             self.state.request_stage = RequestStage::Fail;
@@ -2716,38 +2643,14 @@ impl<'a> HTTPClient<'a> {
             }
         }
 
-        if IS_SSL {
-            // Opportunistic Alt-Svc upgrade: a previous response from this origin
-            // advertised `h3`, and the experimental flag is on. Don't touch
-            // `flags.forced_protocol` — that's the user's explicit `protocol:"http3"`
-            // choice and persists across redirects, whereas an Alt-Svc upgrade is
-            // per-origin and a cross-origin redirect must re-evaluate from h1.
-            // `doRedirectMultiplexed` resets `flags.protocol`, so the redirected
-            // request lands back here with `forced_protocol` still `None` and
-            // consults the cache for the new origin.
-            if self.flags.forced_protocol != Some(Protocol::Http3) && self.can_try_h3_alt_svc() {
-                if let Some(alt_port) =
-                    h3::alt_svc::lookup(self.url.hostname, self.url.get_port_auto())
-                {
-                    // SAFETY: runs on the HTTP thread after `HTTPThread::init`
-                    // set `uws_loop` to its live `us_loop_t`.
-                    let h3_ctx = h3::ClientContext::get_or_create(unsafe {
-                        NonNull::new_unchecked(http_thread().uws_loop)
-                    });
-                    if let Some(ctx) = h3_ctx {
-                        if !h3::ClientContext::as_mut(ctx).connect(
-                            self,
-                            self.url.hostname,
-                            alt_port,
-                        ) {
-                            self.fail(crate::Error::ConnectionRefused);
-                        }
-                        self.complete_connecting_process();
-                        return;
-                    }
-                    // engine init failed: fall through to TCP
-                }
-            }
+        if IS_SSL {}
+
+        // bunre has no HTTP/3 stack, so an explicit `protocol: "http3"` fails up
+        // front instead of silently downgrading to HTTP/1.1 or HTTP/2.
+        if self.flags.forced_protocol == Some(Protocol::Http3) {
+            self.fail(crate::Error::HTTP3Unsupported);
+            self.complete_connecting_process();
+            return;
         }
 
         // `can_offer_h2` refuses to advertise h2 when a JS `checkServerIdentity`
@@ -2757,49 +2660,6 @@ impl<'a> HTTPClient<'a> {
             && self.signals.get(signals::Field::CertErrors)
         {
             self.fail(crate::Error::HTTP2Unsupported);
-            self.complete_connecting_process();
-            return;
-        }
-
-        if self.flags.forced_protocol == Some(Protocol::Http3) {
-            // h3 never routes through `check_server_identity`; refuse the
-            // combination instead of silently skipping the JS callback.
-            if self.signals.get(signals::Field::CertErrors) {
-                self.fail(crate::Error::HTTP3Unsupported);
-                self.complete_connecting_process();
-                return;
-            }
-            if !IS_SSL {
-                self.fail(crate::Error::HTTP3Unsupported);
-                self.complete_connecting_process();
-                return;
-            }
-            if self.http_proxy.is_some() || !self.unix_socket_path.is_empty() {
-                self.fail(crate::Error::HTTP3Unsupported);
-                self.complete_connecting_process();
-                return;
-            }
-            if self.has_tls_options_unsupported_by_h3() {
-                self.fail(crate::Error::HTTP3Unsupported);
-                self.complete_connecting_process();
-                return;
-            }
-            // SAFETY: runs on the HTTP thread after `HTTPThread::init` set
-            // `uws_loop` to its live `us_loop_t`.
-            let Some(ctx) = h3::ClientContext::get_or_create(unsafe {
-                NonNull::new_unchecked(http_thread().uws_loop)
-            }) else {
-                self.fail(crate::Error::HTTP3Unsupported);
-                self.complete_connecting_process();
-                return;
-            };
-            if !h3::ClientContext::as_mut(ctx).connect(
-                self,
-                self.url.hostname,
-                self.url.get_port_auto(),
-            ) {
-                self.fail(crate::Error::ConnectionRefused);
-            }
             self.complete_connecting_process();
             return;
         }
@@ -4287,25 +4147,6 @@ impl<'a> HTTPClient<'a> {
         self.start(HTTPRequestBody::Bytes(request_body));
     }
 
-    pub(crate) fn progress_update_h3(&mut self) {
-        debug_assert!(self.flags.protocol == Protocol::Http3);
-        if self.state.stage == Stage::Done || self.state.stage == Stage::Fail {
-            return;
-        }
-        if self.state.flags.is_redirect_pending && self.state.fail.is_none() {
-            if self.state.is_done() {
-                self.do_redirect_multiplexed();
-            }
-            return;
-        }
-        self.send_progress_update_multiplexed();
-    }
-
-    pub(crate) fn do_redirect_h3(&mut self) {
-        debug_assert!(self.flags.protocol == Protocol::Http3);
-        self.do_redirect_multiplexed();
-    }
-
     pub(crate) fn progress_update<const IS_SSL: bool>(
         &mut self,
         ctx: *mut GenHttpContext<IS_SSL>,
@@ -4847,22 +4688,7 @@ impl<'a> HTTPClient<'a> {
                         && !self.if_modified_since.is_empty()
                         && self.if_modified_since == header.value();
                 }
-                h if h == hash_header_const(b"Alt-Svc") => {
-                    // Record regardless of *this* request's shape — a future
-                    // request to the same origin may be h3-eligible even if this
-                    // one was pinned/proxied/sendfile.
-                    if self.is_https()
-                        && self.unix_socket_path.is_empty()
-                        && !(self.flags.proxy_tunneling && self.proxy_tunnel.is_none())
-                        && h3_alt_svc_enabled()
-                    {
-                        h3::alt_svc::record(
-                            self.url.hostname,
-                            self.url.get_port_auto(),
-                            header.value(),
-                        );
-                    }
-                }
+                h if h == hash_header_const(b"Alt-Svc") => {}
                 _ => {}
             }
         }

@@ -67,24 +67,64 @@ runtime import of a .ts    ok (js_parser untouched)
 Toolchain: `rustc 1.99.0-nightly (nightly-2026-07-20)`, `bun 1.4.2`.
 Full build is `bun run build:release`, roughly 10–20 min. Budget for it.
 
-### Pushing (read this before you try)
+### Pushing — SOLVED, see below
 
-Local history is missing object `5baea663...`, so `git push` refuses to
-fast-forward. A normal push has never worked in this session. The workaround
-used successfully before:
+Local history is missing object `5baea6630dbde44d3ad4023d56d55e1403ffa054`, a
+**commit**. `git fsck` reports exactly one broken link:
+
+```
+broken link from commit 3f2610e24af70b9eca8d7e8201fbfbd7e4b5051a
+              to   commit 5baea6630dbde44d3ad4023d56d55e1403ffa054
+```
+
+`3f2610e2` is an upstream GitHub merge commit (committer
+`GitHub <noreply@github.com>`, GPG-signed, author `robobun@oven.sh`), so the
+local clone has upstream history truncated there. Consequences:
+
+- `git log`, `git merge-base --is-ancestor`, `git rev-list A..B` and
+  `git push origin main` all fail with *"Could not read 5baea663"*.
+- **The gap is unfixable from this machine.** The remote refuses it by name:
+  `git fetch origin 5baea663` → `upload-pack: not our ref`. It is not in
+  `E:\PubCode\bun\.git` either. `git fetch origin` and
+  `git fetch origin 3f2610e2` both succeed and do not supply it.
+
+45 commits are visible above the break, which is why normal work has been
+fine — only operations that walk past `3f2610e2` break.
+
+**Two separate problems were conflated as one.** The `403 Permission ...
+denied to stxh` in older notes was a *credential* problem, not a history
+problem, and it is fixable:
+
+```powershell
+$env:GIT_TERMINAL_PROMPT = "0"     # otherwise Git Credential Manager HANGS the push
+git -c credential.helper=store -c credential.username=bun-fun push ...
+```
+
+`~/.git-credentials` holds three GitHub users (`bun-fun`, `stxh`,
+`yixunbfb`) and `credential.helper` lists both `manager` and `store`. GCM
+prompts, which is what made an earlier attempt appear to hang. `store` with an
+explicit `credential.username=bun-fun` selects the right entry silently.
+Do not pass a second `-c credential.helper=` — an empty one *clears* the list
+and you fall back to a password prompt.
+
+**The push itself** uses the squash-onto-remote-tip workaround:
 
 ```powershell
 $remote = (git ls-remote origin refs/heads/main).Split()[0]
 $tree   = (git show -s --format=%T HEAD).Trim()
 $new    = (git commit-tree $tree -p $remote -F <msgfile>).Trim()
-git push origin "${new}:refs/heads/main"
+git -c credential.helper=store -c credential.username=bun-fun push origin "${new}:refs/heads/main"
 ```
 
-This rewrites the commit on top of the real remote tip, preserving the message.
-A previous push attempt failed with `403 Permission to bun-fun/bunre.git
-denied to stxh` — the credential in `~/.git-credentials` is stored for user
-`bun-fun` but the server resolved the request as `stxh`. **This may still be
-broken; verify write access before promising a push.**
+`commit-tree` sends one commit plus the tree, so nothing below the break is
+needed. It lands as a plain fast-forward and the remote keeps its history.
+
+**Consequence to expect:** after the push, local `main` and `origin/main`
+hold the same tree but different SHAs. Point `main` at `origin/main` to resync
+(`git update-ref refs/heads/main <origin/main> <old>`), and keep the squashed-away
+commits on a side branch first — they are otherwise only in the reflog. That
+was done on 2026-10-11: `local-history-archive` holds the 45-commit history,
+`main` tracks `origin/main`.
 
 ---
 

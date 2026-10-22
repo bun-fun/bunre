@@ -49,8 +49,6 @@ pub enum SocketKind {
     PostgresTls,
     Mysql,
     MysqlTls,
-    Valkey,
-    ValkeyTls,
 
     // ── Bun.spawn IPC over socketpair ─────────────────────────────────────
     SpawnIpc,
@@ -87,13 +85,11 @@ impl SocketKind {
             13 => SocketKind::PostgresTls,
             14 => SocketKind::Mysql,
             15 => SocketKind::MysqlTls,
-            16 => SocketKind::Valkey,
-            17 => SocketKind::ValkeyTls,
-            18 => SocketKind::SpawnIpc,
-            19 => SocketKind::UwsHttp,
-            20 => SocketKind::UwsHttpTls,
-            21 => SocketKind::UwsWs,
-            22 => SocketKind::UwsWsTls,
+            16 => SocketKind::SpawnIpc,
+            17 => SocketKind::UwsHttp,
+            18 => SocketKind::UwsHttpTls,
+            19 => SocketKind::UwsWs,
+            20 => SocketKind::UwsWsTls,
             _ => unreachable!("invalid SocketKind discriminant {v} from C"),
         }
     }

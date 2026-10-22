@@ -108,7 +108,6 @@ pub mod task_tag {
         Read,
         Readv,
         FlushPendingFileSinkTask,
-        RunTestsTask,
         RuntimeTranspilerStore,
         S3HttpDownloadStreamingTask,
         S3HttpSimpleTask,
@@ -142,8 +141,6 @@ pub mod task_tag {
         UvDnsPollFree,            // a closed c-ares uv_poll_t (windows)
         UvHandleClose,            // an addon's uv_close (posix)
         UvLoopDispatch,           // an addon's uv_async_send (posix)
-        ValkeyDeferredClose,
-        ValkeyDeferredFailure,
         WindowsNamedPipeContext,
         Write,
         Writev,

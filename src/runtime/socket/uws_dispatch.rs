@@ -64,8 +64,6 @@ static TABLES: std::sync::LazyLock<[Option<&'static VTable>; SOCKET_KIND_COUNT]>
         t[SocketKind::PostgresTls as usize] = Some(vtable::make::<handlers::Postgres<true>>());
         t[SocketKind::Mysql as usize] = Some(vtable::make::<handlers::MySQL<false>>());
         t[SocketKind::MysqlTls as usize] = Some(vtable::make::<handlers::MySQL<true>>());
-        t[SocketKind::Valkey as usize] = Some(vtable::make::<handlers::Valkey<false>>());
-        t[SocketKind::ValkeyTls as usize] = Some(vtable::make::<handlers::Valkey<true>>());
 
         // IPC
         t[SocketKind::SpawnIpc as usize] = Some(vtable::make::<handlers::SpawnIPC>());

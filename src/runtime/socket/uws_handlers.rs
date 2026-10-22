@@ -20,7 +20,6 @@ use bun_uws_sys::{us_bun_verify_error_t, us_socket_t};
 
 use crate::api;
 use crate::ipc as IPC;
-use crate::valkey_jsc::js_valkey;
 use bun_http_jsc::websocket_client;
 use bun_http_jsc::websocket_client::websocket_upgrade_client;
 use bun_sql_jsc::mysql;
@@ -364,7 +363,6 @@ impl_ns_socket_events_forward!(
     mysql::js_my_sql_connection::JSMySQLConnection,
     mysql::js_my_sql_connection::SocketHandler<SSL>
 );
-impl_ns_socket_events_forward!(js_valkey::JSValkeyClient, js_valkey::SocketHandler<SSL>);
 
 // ── Bun.connect / Bun.listen ────────────────────────────────────────────────
 // Noalias re-entrancy: routed through `RawPtrHandler`. `NewSocket::on_*`
@@ -700,8 +698,6 @@ pub(crate) type MySQL<const SSL: bool> = NsHandler<
     mysql::js_my_sql_connection::SocketHandler<SSL>,
     SSL,
 >;
-pub(crate) type Valkey<const SSL: bool> =
-    NsHandler<js_valkey::JSValkeyClient, js_valkey::SocketHandler<SSL>, SSL>;
 
 // ── Bun.spawn IPC / process.send() ──────────────────────────────────────────
 // Ext is `*IPC.SendQueue` for both child-side `process.send` and parent-side

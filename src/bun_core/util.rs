@@ -734,6 +734,14 @@ pub use bun_alloc::SEP;
 pub struct PathBuffer(pub [u8; MAX_PATH_BYTES]);
 impl PathBuffer {
     pub const ZEROED: Self = Self([0; MAX_PATH_BYTES]);
+
+    /// Stack-allocated scratch buffer; caller initializes as needed.
+    /// Equivalent to `ZEROED` but makes the stack-alloc intent explicit.
+    #[inline]
+    pub const fn uninit() -> Self {
+        Self([0; MAX_PATH_BYTES])
+    }
+
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         &mut self.0
@@ -763,6 +771,13 @@ impl core::ops::DerefMut for PathBuffer {
 pub struct WPathBuffer(pub [u16; PATH_MAX_WIDE]);
 impl WPathBuffer {
     pub const ZEROED: Self = Self([0; PATH_MAX_WIDE]);
+
+    /// Stack-allocated wide scratch buffer.
+    #[inline]
+    pub const fn uninit() -> Self {
+        Self([0; PATH_MAX_WIDE])
+    }
+
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [u16] {
         &mut self.0

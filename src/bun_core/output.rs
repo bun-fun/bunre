@@ -2970,11 +2970,11 @@ mod pretty_fmt_tests {
     fn no_raw_tags_leak_into_help_header() {
         // First line of `bun --help` — must contain no `<r>` / `<b>` literals.
         const ON: &str = pretty_fmt!(
-            "<r><b><magenta>Bun<r> is a fast JavaScript runtime, package manager, bundler, and test runner. <d>({s})<r>\n",
+            "<r><b><magenta>Bun<r> is a fast JavaScript runtime. <d>({s})<r>\n",
             true
         );
         const OFF: &str = pretty_fmt!(
-            "<r><b><magenta>Bun<r> is a fast JavaScript runtime, package manager, bundler, and test runner. <d>({s})<r>\n",
+            "<r><b><magenta>Bun<r> is a fast JavaScript runtime. <d>({s})<r>\n",
             false
         );
         assert!(!ON.contains("<r>"), "raw <r> leaked: {ON:?}");
@@ -2982,7 +2982,7 @@ mod pretty_fmt_tests {
         assert!(ON.contains("\x1b["), "no ANSI emitted: {ON:?}");
         assert_eq!(
             OFF,
-            "Bun is a fast JavaScript runtime, package manager, bundler, and test runner. ({})\n",
+            "Bun is a fast JavaScript runtime. ({})\n",
         );
     }
 

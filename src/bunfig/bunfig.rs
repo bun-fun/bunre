@@ -18,7 +18,6 @@ use bun_parsers::toml::TOML;
 
 use bun_install_types::NodeLinker::FromExprError;
 use bun_options_types::LoaderExt as _;
-use bun_options_types::code_coverage_options::Reporters as CoverageReporters;
 use bun_options_types::context::{MacroImportReplacementMap, MacroMap, MacroOptions};
 use bun_options_types::global_cache::GlobalCache;
 use bun_options_types::offline_mode::PREFER as OFFLINE_PREFER;
@@ -207,24 +206,6 @@ impl<'a> Parser<'a, '_> {
                 format_args!("expected string but received {}", expr.data.tag_name()),
             ),
         }
-    }
-
-    fn apply_coverage_reporter_item(&mut self, item: &Expr) -> crate::Result<()> {
-        let item_str = item.as_string(self.bump).unwrap_or(b"");
-        if item_str == b"text" {
-            self.ctx.test_options.coverage.reporters.text = true;
-        } else if item_str == b"lcov" {
-            self.ctx.test_options.coverage.reporters.lcov = true;
-        } else {
-            self.add_error_format(
-                item.loc,
-                format_args!(
-                    "Invalid coverage reporter \"{}\"",
-                    bstr::BStr::new(item_str)
-                ),
-            )?;
-        }
-        Ok(())
     }
 
     fn expect(&mut self, expr: &Expr, token: ExprTag) -> crate::Result<()> {
@@ -447,313 +428,7 @@ impl<'a> Parser<'a, '_> {
 
         self.read_for_tool(&json)?;
 
-        if cmd == CommandTag::TestCommand {
-            if let Some(test) = json.get(b"test") {
-                if let Some(root) = test.get(b"root") {
-                    self.ctx.debug.test_directory = root.as_string(self.bump).unwrap_or(b"").into();
-                }
-
-                if let Some(expr) = test.get(b"preload") {
-                    self.load_preload(&expr)?;
-                }
-
-                if let Some(expr) = test.get(b"smol") {
-                    self.expect(&expr, ExprTag::EBoolean)?;
-                    self.ctx.runtime_options.smol =
-                        expr.as_bool().expect("infallible: type checked");
-                }
-
-                if let Some(expr) = test.get(b"coverage") {
-                    self.expect(&expr, ExprTag::EBoolean)?;
-                    self.ctx.test_options.coverage.enabled =
-                        expr.as_bool().expect("infallible: type checked");
-                }
-
-                if let Some(expr) = test.get(b"onlyFailures") {
-                    self.expect(&expr, ExprTag::EBoolean)?;
-                    self.ctx.test_options.reporters.only_failures =
-                        expr.as_bool().expect("infallible: type checked");
-                }
-
-                if let Some(expr) = test.get(b"reporter") {
-                    self.expect(&expr, ExprTag::EObject)?;
-                    if let Some(junit_expr) = expr.get(b"junit") {
-                        self.expect_string(&junit_expr)?;
-                        if let ExprData::EString(s) = &junit_expr.data {
-                            if s.len() > 0 {
-                                self.ctx.test_options.reporters.junit = true;
-                                self.ctx.test_options.reporter_outfile =
-                                    Some(estring_to_owned(s, self.bump));
-                            }
-                        }
-                    }
-                    if let Some(dots_expr) = expr.get(b"dots").or_else(|| expr.get(b"dot")) {
-                        self.expect(&dots_expr, ExprTag::EBoolean)?;
-                        self.ctx.test_options.reporters.dots =
-                            dots_expr.as_bool().expect("infallible: type checked");
-                    }
-                }
-
-                if let Some(expr) = test.get(b"coverageReporter") {
-                    'brk: {
-                        self.ctx.test_options.coverage.reporters = CoverageReporters {
-                            text: false,
-                            lcov: false,
-                        };
-                        if let ExprData::EString(_) = &expr.data {
-                            self.apply_coverage_reporter_item(&expr)?;
-                            break 'brk;
-                        }
-
-                        self.expect(&expr, ExprTag::EArray)?;
-                        let arr = expr.data.e_array().expect("infallible: variant checked");
-                        let items = arr.items.slice();
-                        for item in items {
-                            self.expect_string(item)?;
-                            self.apply_coverage_reporter_item(item)?;
-                        }
-                    }
-                }
-
-                if let Some(expr) = test.get(b"coverageDir") {
-                    self.expect_string(&expr)?;
-                    self.ctx.test_options.coverage.reports_directory = estring_to_owned(
-                        expr.data
-                            .e_string()
-                            .expect("infallible: variant checked")
-                            .get(),
-                        self.bump,
-                    );
-                }
-
-                if let Some(expr) = test.get(b"coverageThreshold") {
-                    'outer: {
-                        if let ExprData::ENumber(n) = expr.data {
-                            let v = n.value();
-                            self.ctx.test_options.coverage.fractions.functions = v;
-                            self.ctx.test_options.coverage.fractions.lines = v;
-                            self.ctx.test_options.coverage.fractions.stmts = v;
-                            self.ctx.test_options.coverage.fail_on_low_coverage = true;
-                            break 'outer;
-                        }
-
-                        self.expect(&expr, ExprTag::EObject)?;
-                        if let Some(functions) = expr.get(b"functions") {
-                            self.expect(&functions, ExprTag::ENumber)?;
-                            self.ctx.test_options.coverage.fractions.functions =
-                                functions.as_number().expect("infallible: type checked");
-                            self.ctx.test_options.coverage.fail_on_low_coverage = true;
-                        }
-                        if let Some(lines) = expr.get(b"lines") {
-                            self.expect(&lines, ExprTag::ENumber)?;
-                            self.ctx.test_options.coverage.fractions.lines =
-                                lines.as_number().expect("infallible: type checked");
-                            self.ctx.test_options.coverage.fail_on_low_coverage = true;
-                        }
-                        if let Some(stmts) = expr.get(b"statements") {
-                            self.expect(&stmts, ExprTag::ENumber)?;
-                            self.ctx.test_options.coverage.fractions.stmts =
-                                stmts.as_number().expect("infallible: type checked");
-                            self.ctx.test_options.coverage.fail_on_low_coverage = true;
-                        }
-                    }
-                }
-
-                // This mostly exists for debugging.
-                if let Some(expr) = test.get(b"coverageIgnoreSourcemaps") {
-                    self.expect(&expr, ExprTag::EBoolean)?;
-                    self.ctx.test_options.coverage.ignore_sourcemap =
-                        expr.as_bool().expect("infallible: type checked");
-                }
-
-                if let Some(expr) = test.get(b"coverageSkipTestFiles") {
-                    self.expect(&expr, ExprTag::EBoolean)?;
-                    self.ctx.test_options.coverage.skip_test_files =
-                        expr.as_bool().expect("infallible: type checked");
-                }
-
-                let mut randomize_from_config: Option<bool> = None;
-
-                if let Some(expr) = test.get(b"randomize") {
-                    self.expect(&expr, ExprTag::EBoolean)?;
-                    randomize_from_config = expr.as_bool();
-                    self.ctx.test_options.randomize =
-                        expr.as_bool().expect("infallible: type checked");
-                }
-
-                if let Some(expr) = test.get(b"seed") {
-                    self.expect(&expr, ExprTag::ENumber)?;
-                    let seed_value =
-                        num_to_u32(expr.as_number().expect("infallible: type checked"));
-
-                    // Validate that randomize is true when seed is specified
-                    let has_randomize_true =
-                        randomize_from_config.unwrap_or(self.ctx.test_options.randomize);
-                    if !has_randomize_true {
-                        self.add_error(
-                            expr.loc,
-                            b"\"seed\" can only be used when \"randomize\" is true",
-                        )?;
-                    }
-
-                    self.ctx.test_options.seed = Some(seed_value);
-                }
-
-                if let Some(expr) = test.get(b"rerunEach") {
-                    self.expect(&expr, ExprTag::ENumber)?;
-                    if self.ctx.test_options.retry != 0 {
-                        self.add_error(expr.loc, b"\"rerunEach\" cannot be used with \"retry\"")?;
-                        return Ok(());
-                    }
-                    self.ctx.test_options.repeat_count =
-                        num_to_u32(expr.as_number().expect("infallible: type checked"));
-                }
-
-                if let Some(expr) = test.get(b"retry") {
-                    self.expect(&expr, ExprTag::ENumber)?;
-                    if self.ctx.test_options.repeat_count != 0 {
-                        self.add_error(expr.loc, b"\"retry\" cannot be used with \"rerunEach\"")?;
-                        return Ok(());
-                    }
-                    self.ctx.test_options.retry =
-                        num_to_u32(expr.as_number().expect("infallible: type checked"));
-                }
-
-                if let Some(expr) = test.get(b"concurrentTestGlob") {
-                    match &expr.data {
-                        ExprData::EString(s) => {
-                            if s.len() == 0 {
-                                self.add_error(
-                                    expr.loc,
-                                    b"concurrentTestGlob cannot be an empty string",
-                                )?;
-                                return Ok(());
-                            }
-                            let pattern = estring_to_owned(s, self.bump);
-                            self.ctx.test_options.concurrent_test_glob = Some(vec![pattern]);
-                        }
-                        ExprData::EArray(arr) => {
-                            let items = arr.items.slice();
-                            if items.is_empty() {
-                                self.add_error(
-                                    expr.loc,
-                                    b"concurrentTestGlob array cannot be empty",
-                                )?;
-                                return Ok(());
-                            }
-                            let mut patterns: Vec<Box<[u8]>> = Vec::with_capacity(items.len());
-                            for item in items {
-                                let ExprData::EString(s) = &item.data else {
-                                    self.add_error(
-                                        item.loc,
-                                        b"concurrentTestGlob array must contain only strings",
-                                    )?;
-                                    return Ok(());
-                                };
-                                if s.len() == 0 {
-                                    self.add_error(
-                                        item.loc,
-                                        b"concurrentTestGlob patterns cannot be empty strings",
-                                    )?;
-                                    return Ok(());
-                                }
-                                patterns.push(estring_to_owned(s, self.bump));
-                            }
-                            self.ctx.test_options.concurrent_test_glob = Some(patterns);
-                        }
-                        _ => {
-                            self.add_error(
-                                expr.loc,
-                                b"concurrentTestGlob must be a string or array of strings",
-                            )?;
-                            return Ok(());
-                        }
-                    }
-                }
-
-                if let Some(expr) = test.get(b"coveragePathIgnorePatterns") {
-                    'brk: {
-                        match &expr.data {
-                            ExprData::EString(s) => {
-                                self.ctx.test_options.coverage.ignore_patterns =
-                                    vec![estring_to_owned(s, self.bump)];
-                            }
-                            ExprData::EArray(arr) => {
-                                let items = arr.items.slice();
-                                if items.is_empty() {
-                                    break 'brk;
-                                }
-                                let mut patterns: Vec<Box<[u8]>> = Vec::with_capacity(items.len());
-                                for item in items {
-                                    let ExprData::EString(s) = &item.data else {
-                                        self.add_error(
-                                            item.loc,
-                                            b"coveragePathIgnorePatterns array must contain only strings",
-                                        )?;
-                                        return Ok(());
-                                    };
-                                    patterns.push(estring_to_owned(s, self.bump));
-                                }
-                                self.ctx.test_options.coverage.ignore_patterns = patterns;
-                            }
-                            _ => {
-                                self.add_error(
-                                    expr.loc,
-                                    b"coveragePathIgnorePatterns must be a string or array of strings",
-                                )?;
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-
-                if let Some(expr) = test.get(b"pathIgnorePatterns") {
-                    'brk: {
-                        // Only skip if --path-ignore-patterns was explicitly passed via CLI
-                        if self.ctx.test_options.path_ignore_patterns_from_cli {
-                            break 'brk;
-                        }
-                        match &expr.data {
-                            ExprData::EString(s) => {
-                                self.ctx.test_options.path_ignore_patterns =
-                                    vec![estring_to_owned(s, self.bump)];
-                            }
-                            ExprData::EArray(arr) => {
-                                let items = arr.items.slice();
-                                if items.is_empty() {
-                                    break 'brk;
-                                }
-                                let mut patterns: Vec<Box<[u8]>> = Vec::with_capacity(items.len());
-                                for item in items {
-                                    let ExprData::EString(s) = &item.data else {
-                                        self.add_error(
-                                            item.loc,
-                                            b"pathIgnorePatterns array must contain only strings",
-                                        )?;
-                                        return Ok(());
-                                    };
-                                    patterns.push(estring_to_owned(s, self.bump));
-                                }
-                                self.ctx.test_options.path_ignore_patterns = patterns;
-                            }
-                            _ => {
-                                self.add_error(
-                                    expr.loc,
-                                    b"pathIgnorePatterns must be a string or array of strings",
-                                )?;
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if cmd.is_npm_related()
-            || cmd == CommandTag::RunCommand
-            || cmd == CommandTag::AutoCommand
-            || cmd == CommandTag::TestCommand
-        {
+        if cmd.is_npm_related() || cmd == CommandTag::RunCommand || cmd == CommandTag::AutoCommand {
             if let Some(install_obj) = json.get_object(b"install") {
                 // Ensure ctx.install is allocated so later passes can write into it
                 // once api::BunInstall fields land.
@@ -905,10 +580,7 @@ impl<'a> Parser<'a, '_> {
         }
 
         if let Some(_bun) = json.get(b"bundle") {
-            if cmd == CommandTag::BuildCommand
-                || cmd == CommandTag::RunCommand
-                || cmd == CommandTag::AutoCommand
-            {
+            if cmd == CommandTag::RunCommand || cmd == CommandTag::AutoCommand {
                 if let Some(dir) = _bun.get(b"outdir") {
                     self.expect_string(&dir)?;
                     self.ctx.args.output_dir = Some(estring_to_owned(
@@ -921,7 +593,7 @@ impl<'a> Parser<'a, '_> {
                 }
             }
 
-            if cmd == CommandTag::BuildCommand {
+            if cmd == CommandTag::AutoCommand || cmd == CommandTag::RunCommand {
                 if let Some(expr2) = _bun.get(b"logLevel") {
                     self.load_log_level(&expr2)?;
                 }

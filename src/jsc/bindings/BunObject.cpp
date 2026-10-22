@@ -40,7 +40,6 @@
 #include "GeneratedBunObjectInternals.h"
 #include "GeneratedCrypto.h"
 #include "GeneratedCryptoHasher.h"
-#include "GeneratedCsrfJsc.h"
 #include "GeneratedDns.h"
 #include "GeneratedDnsInternals.h"
 #include "GeneratedFilesystemRouter.h"
@@ -943,7 +942,6 @@ JSC_DEFINE_HOST_FUNCTION(functionFileURLToPath, (JSC::JSGlobalObject * globalObj
 /* Source for BunObject.lut.h
 @begin bunObjectTable
     $                                              bunObjectShell                                                      DontDelete|CustomValue
-    Archive                                        BunObject_lazyPropCb_wrap_Archive                                   DontDelete|PropertyCallback
     ArrayBufferSink                                BunObject_lazyPropCb_wrap_ArrayBufferSink                           DontDelete|PropertyCallback
     Cookie                                         constructCookieObject                                               DontDelete|ReadOnly|PropertyCallback
     CookieMap                                      constructCookieMapObject                                            DontDelete|ReadOnly|PropertyCallback
@@ -973,10 +971,8 @@ JSC_DEFINE_HOST_FUNCTION(functionFileURLToPath, (JSC::JSGlobalObject * globalObj
     embeddedFiles                                  BunObject_lazyPropCb_wrap_embeddedFiles                             DontDelete|PropertyCallback
     S3Client                                       BunObject_lazyPropCb_wrap_S3Client                                  DontDelete|PropertyCallback
     s3                                             BunObject_lazyPropCb_wrap_s3                                        DontDelete|PropertyCallback
-    CSRF                                           Bun::Bindgen::Generated::CsrfJsc::createCSRF                        DontDelete|PropertyCallback
     allocUnsafe                                    Bun::Bindgen::Generated::BunObject::jsAllocUnsafe                   DontDelete|Function 1
     argv                                           BunObject_lazyPropCb_wrap_argv                                      DontDelete|PropertyCallback
-    build                                          BunObject_callback_build                                            DontDelete|Function 1
     concatArrayBuffers                             functionConcatTypedArrays                                           DontDelete|Function 3
     connect                                        BunObject_callback_connect                                          DontDelete|Function 1
     cron                                           BunObject_lazyPropCb_wrap_cron                                      DontDelete|PropertyCallback
@@ -1002,7 +998,6 @@ JSC_DEFINE_HOST_FUNCTION(functionFileURLToPath, (JSC::JSGlobalObject * globalObj
     inspect                                        BunObject_lazyPropCb_wrap_inspect                                   DontDelete|PropertyCallback
     isMainThread                                   constructIsMainThread                                               ReadOnly|DontDelete|PropertyCallback
     isStandaloneExecutable                         BunObject_lazyPropCb_wrap_isStandaloneExecutable                    ReadOnly|DontDelete|PropertyCallback
-    jest                                           BunObject_callback_jest                                             DontEnum|DontDelete|Function 1
     listen                                         BunObject_callback_listen                                           DontDelete|Function 1
     udpSocket                                      BunObject_callback_udpSocket                                        DontDelete|Function 1
     main                                           bunObjectMain                                                       DontDelete|CustomAccessor
@@ -1051,8 +1046,6 @@ JSC_DEFINE_HOST_FUNCTION(functionFileURLToPath, (JSC::JSGlobalObject * globalObj
     version                                        constructBunVersion                                                 ReadOnly|DontDelete|PropertyCallback
     WebView                                        constructWebViewObject                                              ReadOnly|DontDelete|PropertyCallback
     which                                          Bun::Bindgen::Generated::BunObject::jsWhich                         DontDelete|Function 1
-    RedisClient                                    BunObject_lazyPropCb_wrap_ValkeyClient                              DontDelete|PropertyCallback
-    redis                                          BunObject_lazyPropCb_wrap_valkey                                    DontDelete|PropertyCallback
     secrets                                        constructSecretsObject                                              DontDelete|PropertyCallback
     write                                          BunObject_callback_write                                            DontDelete|Function 1
     zstdCompressSync                               Bun::Bindgen::Generated::BunObject::jsZstdCompressSync             DontDelete|Function 1

@@ -53,7 +53,6 @@ struct OnLoadResult {
     WTF::Vector<uint8_t> sourceTextCopy;
 };
 
-extern "C" bool isBunTest;
 
 class PendingVirtualModuleResult : public JSC::JSInternalFieldObjectImpl<3> {
 public:

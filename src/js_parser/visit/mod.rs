@@ -115,12 +115,6 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
 
         let body_loc = func.body.loc;
         let body_stmts: &'a [Stmt] = func.body.stmts.slice();
-        let prev_may_replace_body = self.enter_react_compiler_candidate(
-            func.name.map(|n| n.ref_),
-            func.flags
-                .contains(flags::Function::HasReactHooksSuppression),
-            body_stmts,
-        );
 
         self.push_scope_for_visit_pass(ScopeKind::FunctionArgs, open_parens_loc)
             .expect("unreachable");
@@ -142,31 +136,8 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
         let mut temp_opts = PrependTempRefsOpts {
             kind: StmtsKind::FnBody,
         };
-        let rc_binding = self.react_compiler_candidate_name.take();
-        if rc_binding.is_some() {
-            self.react_compiler_pending = Some(bun_react_compiler::PendingCompile {
-                args: func.args,
-                flags: func.flags,
-                body_loc,
-                args_loc: func.open_parens_loc,
-                binding: func
-                    .name
-                    .map(|n| n.ref_)
-                    .filter(|r| r.is_valid())
-                    .or(rc_binding),
-                in_react_hoc: core::mem::take(&mut self.react_compiler_in_react_hoc),
-            });
-        }
         self.visit_stmts_and_prepend_temp_refs(&mut stmts, &mut temp_opts)
             .expect("unreachable");
-        self.react_compiler_pending = None;
-        if let Some(result) = self.react_compiler_result.take() {
-            func.args = result.args;
-            func.flags = result.flags;
-            if let Some(b) = rc_binding.filter(|r| *r != js_ast::Ref::NONE) {
-                self.record_usage(b);
-            }
-        }
 
         if self.options.features.react_fast_refresh {
             // react_refresh.hook_ctx_storage is `Option<NonNull<Option<HookContext>>>`
@@ -211,7 +182,6 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
         self.pop_scope();
         self.pop_scope();
 
-        self.react_compiler_may_replace_body = prev_may_replace_body;
         self.fn_or_arrow_data_visit = old_fn_or_arrow_data;
         self.fn_only_data_visit = old_fn_only_data;
 
@@ -350,14 +320,6 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                         }
                     }
                 }
-                if self.react_compiler.is_some()
-                    && self.current_scope == self.module_scope
-                    && let BData::BIdentifier(id) = decl.binding.data
-                    && let Some(in_hoc) = self.react_compiler_candidate_expr(&val)
-                {
-                    self.react_compiler_candidate_name = Some(id.r#ref);
-                    self.react_compiler_in_react_hoc = in_hoc;
-                }
                 self.visit_expr_in_out(
                     &mut val,
                     ExprIn {
@@ -367,8 +329,6 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                         ..Default::default()
                     },
                 );
-                self.react_compiler_candidate_name = None;
-                self.react_compiler_in_react_hoc = false;
                 decl.value = Some(val);
                 self.decorator_class_name = prev_decorator_class_name;
 
@@ -1502,14 +1462,6 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
 
         let p = self;
 
-        // Consume before recursing so a nested function body's `visit_stmts`
-        // doesn't compile the wrong target.
-        let rc_pending = if kind == StmtsKind::FnBody {
-            p.react_compiler_pending.take()
-        } else {
-            None
-        };
-
         #[cfg(debug_assertions)]
         let initial_scope: js_ast::StoreRef<js_ast::Scope> = p.current_scope;
 
@@ -1777,37 +1729,6 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
         #[cfg(debug_assertions)]
         // if this fails it means that scope pushing/popping is not balanced
         debug_assert!(p.current_scope == initial_scope);
-
-        if let Some(pending) = rc_pending
-            && p.react_compiler_may_replace_body
-            && let Some(mut rc) = p.react_compiler.take()
-        {
-            let name = pending
-                .binding
-                .filter(|r| *r != js_ast::Ref::NONE)
-                .map(|r| p.load_name_from_ref(r));
-            // `Host::new_local` appends the locals of the compiled function here.
-            let generated_len = p.current_scope().generated.len();
-            let compiled = {
-                let host = &mut crate::react_compiler_host::ReactCompilerHost::new(p);
-                bun_react_compiler::maybe_compile_pending(
-                    &mut rc,
-                    host,
-                    &pending,
-                    stmts.as_mut_slice(),
-                    name,
-                )
-            };
-            p.react_compiler = Some(rc);
-            if let Some((new_body, result)) = compiled {
-                stmts.clear();
-                stmts.extend(new_body);
-                p.react_compiler_result = Some(result);
-                p.drop_symbols_of_replaced_function(pending.binding);
-            } else {
-                p.current_scope_mut().generated.truncate(generated_len);
-            }
-        }
 
         if !p.options.features.minify_syntax || !p.options.features.dead_code_elimination {
             return Ok(());

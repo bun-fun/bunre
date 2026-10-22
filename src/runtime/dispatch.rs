@@ -131,12 +131,10 @@ use crate::socket::upgraded_duplex::UpgradedDuplex;
 #[cfg(windows)]
 use crate::socket::windows_named_pipe::WindowsNamedPipe;
 
-use crate::valkey_jsc::js_valkey::JSValkeyClient as Valkey;
 use bun_sql_jsc::mysql::js_my_sql_connection::JSMySQLConnection as MySQLConnection;
 use bun_sql_jsc::postgres::PostgresSQLConnection;
 use bun_sql_jsc::shared::connection_timers::TimedConnection as _;
 
-use crate::test_runner::bun_test::{BunTest, BunTestPtr};
 use crate::timer::{DateHeaderTimer, EventLoopDelayMonitor};
 use bun_jsc::abort_signal::Timeout as AbortSignalTimeout;
 use bun_jsc::garbage_collection_controller::GarbageCollectionController;
@@ -214,12 +212,6 @@ pub(crate) fn run_task(
             // the task owns a ref for its duration; `run_deferred` releases it.
             unsafe { crate::ipc::SendQueue::run_deferred(cast_ptr!(crate::ipc::SendQueue)) };
         }
-        task_tag::AsyncModule => {
-            // SAFETY: `AsyncModule::done` boxed it; the arm consumes the box.
-            bun_jsc::async_module::AsyncModule::on_done(unsafe {
-                bun_core::heap::take(cast_ptr!(bun_jsc::async_module::AsyncModule))
-            })?;
-        }
         task_tag::BundleV2PluginResolve => {
             // `bun_bundler` is JSC-free; the C++ hop it calls answers the request
             // itself when the plugin throws, but can return early with an
@@ -276,17 +268,6 @@ pub(crate) fn run_task(
             // SAFETY: boxed in `on_raw_libuv_complete`; the arm consumes it.
             unsafe { bun_core::heap::take(cast_ptr!(crate::dns_jsc::LibuvCompleteHolder)) }.run();
         }
-        #[cfg(windows)]
-        task_tag::UvDnsPollFree => {
-            crate::dns_jsc::UvDnsPoll::destroy(cast_ptr!(crate::dns_jsc::UvDnsPoll));
-        }
-        task_tag::ValkeyDeferredClose => {
-            // SAFETY: boxed at the enqueue site; the arm consumes it.
-            unsafe {
-                bun_core::heap::take(cast_ptr!(crate::valkey_jsc::js_valkey::ValkeyDeferredClose))
-            }
-            .run();
-        }
         task_tag::StatWatcherTimerUpdate => {
             // SAFETY: boxed in `schedule_timer_update`; the arm consumes it.
             unsafe {
@@ -338,16 +319,6 @@ pub(crate) fn run_task(
             crate::api::html_rewriter::RewriterPipe::run_background_pull(cast_ptr!(
                 crate::api::html_rewriter::RewriterPipe
             ))?;
-        }
-        task_tag::RunTestsTask => {
-            // SAFETY: boxed in `run_next_tick`; the arm consumes it.
-            unsafe { bun_core::heap::take(cast_ptr!(crate::test_runner::bun_test::RunTestsTask)) }
-                .call()?;
-        }
-        task_tag::ValkeyDeferredFailure => {
-            // SAFETY: boxed at the enqueue site; the arm consumes it.
-            unsafe { bun_core::heap::take(cast_ptr!(crate::valkey_jsc::valkey::DeferredFailure)) }
-                .run()?;
         }
         task_tag::DnsErrorDeferred => {
             // SAFETY: boxed in `reject_later`; the arm consumes it.
@@ -530,9 +501,6 @@ pub(crate) fn run_task(
         task_tag::JSCDeferredWorkTask => {
             bun_jsc::mark_binding();
             cast!(JSCDeferredWorkTask).run(global)?;
-        }
-        task_tag::PollPendingModulesTask => {
-            vm.modules.on_poll();
         }
         task_tag::RuntimeTranspilerStore => {
             let store = cast!(RuntimeTranspilerStore);
@@ -752,7 +720,7 @@ fn run_task_cold(task: Task) {
 /// `release_task_unrun` track `bun_event_loop::task_tag::COUNT`. Bump when
 /// adding a variant — and give it an arm in both.
 const _: () = assert!(
-    task_tag::COUNT == 86,
+    task_tag::COUNT == 83,
     "dispatch::run_task / release_task_unrun arm count out of sync with bun_event_loop::task_tag",
 );
 
@@ -898,9 +866,6 @@ pub(crate) unsafe fn __bun_run_file_poll(poll: *mut FilePoll, size_or_offset: i6
         poll_tag::SHELL_STATIC_PIPE_WRITER => {
             poll_arm!(StaticPipeWriterPoll<crate::shell::subproc::ShellSubprocess>)
         }
-        poll_tag::SECURITY_SCAN_STATIC_PIPE_WRITER => {
-            poll_arm!(StaticPipeWriterPoll<bun_install::SecurityScanSubprocess<'_>>)
-        }
         // `bun.shell.Interpreter.IOWriter.Poll`
         poll_tag::SHELL_BUFFERED_WRITER => poll_arm!(ShellBufferedWriterPoll, |h| {
             // SAFETY: tag matched, so `owner.ptr` is a live `*mut ShellBufferedWriterPoll`
@@ -928,14 +893,6 @@ pub(crate) unsafe fn __bun_run_file_poll(poll: *mut FilePoll, size_or_offset: i6
         }
         poll_tag::TERMINAL_POLL => poll_arm!(TerminalPoll),
         // `OutputReader = BufferedReader` in install crate — separate tag for ownership.
-        poll_tag::LIFECYCLE_SCRIPT_SUBPROCESS_OUTPUT_READER => {
-            poll_arm!(bun_io::BufferedReader, |h| {
-                // SAFETY: tag matched, so `owner.ptr` is a live `*mut BufferedReader`
-                // set at `FilePoll::init`. Passed raw (see BUFFERED_READER above).
-                unsafe { bun_io::BufferedReader::on_poll(h, size_or_offset as isize, hup) }
-            })
-        }
-
         poll_tag::NULL => {
             // The low-tier `on_update` already logged before calling the hook
             // when it was null; here we just no-op the unknown tag.
@@ -1253,16 +1210,6 @@ pub(crate) unsafe fn __bun_fire_timer(
             unsafe { (*container).on_max_lifetime_timeout() };
             Ok(())
         }
-        EventLoopTimerTag::ValkeyConnectionTimeout => {
-            let container = owner!(Valkey, timer);
-            // SAFETY: per fn contract.
-            unsafe { (*container).on_connection_timeout() }
-        }
-        EventLoopTimerTag::ValkeyConnectionReconnect => {
-            let container = owner!(Valkey, reconnect_timer);
-            // SAFETY: per fn contract.
-            unsafe { (*container).on_reconnect_timer() }
-        }
         EventLoopTimerTag::SubprocessTimeout => {
             timer_arm!(Subprocess<'_>, event_loop_timer, |c, _now, _vm| (*c)
                 .timeout_callback())
@@ -1278,44 +1225,10 @@ pub(crate) unsafe fn __bun_fire_timer(
             DevServer::emit_memory_visualizer_message_timer(t);
             Ok(())
         }
-        EventLoopTimerTag::BunTest => {
-            let container = owner!(BunTest, timer);
-            // SAFETY: container is the payload of a live `Rc<BunTestCell>`; the
-            // strong count is ≥1 (held by `Jest.active_file`).
-            // `BunTestCell` is a `UnsafeCell<BunTest>` newtype — same
-            // layout as `BunTest`, so the raw `*mut BunTest` recovered above is
-            // also the `Rc` payload pointer.
-            let strong: BunTestPtr = unsafe {
-                let rc = std::rc::Rc::from_raw(
-                    container as *const crate::test_runner::bun_test::BunTestCell,
-                );
-                let cloned = std::rc::Rc::clone(&rc);
-                // Don't drop the original ref — it's borrowed, not owned here.
-                let _ = std::rc::Rc::into_raw(rc);
-                cloned
-            };
-            // SAFETY: per fn contract. `bun_test_timeout_callback` takes a
-            // `&bun_core::Timespec`; the low-tier `EventLoopTimer::Timespec` is
-            // a layout-identical local stub.
-            let now_core = unsafe {
-                bun_core::Timespec {
-                    sec: (*now).sec,
-                    nsec: (*now).nsec,
-                }
-            };
-            BunTest::bun_test_timeout_callback(&strong, &now_core, VirtualMachine::get());
-            Ok(())
-        }
         EventLoopTimerTag::CronJob => {
             let c: *mut CronJob = owner!(CronJob, event_loop_timer);
             // SAFETY: a scheduled job's JS wrapper keeps it alive; `t` was just popped.
             CronJob::on_timer_fire(unsafe { bun_ptr::ThisPtr::new(c) }, VirtualMachine::get());
-            Ok(())
-        }
-        EventLoopTimerTag::QuicEndpoint => {
-            let c: *mut crate::node::quic::QuicEndpoint =
-                owner!(crate::node::quic::QuicEndpoint, event_loop_timer);
-            crate::node::quic::QuicEndpoint::on_timer_fire(c);
             Ok(())
         }
         EventLoopTimerTag::UvTimer => {
@@ -1339,7 +1252,7 @@ pub(crate) unsafe fn __bun_fire_timer(
 }
 
 /// The fold for a foreign dispatcher's landing frame — a uSockets / uWS /
-/// lsquic / pipe-reader callback that returns `void`, so what its JS left
+/// uWS / pipe-reader callback that returns `void`, so what its JS left
 /// pending has nowhere to go but here: reported as uncaught (or, for the VM's
 /// termination, left for the loop to stand down on), on the JS thread this
 /// dispatch runs on, rather than left pending for whatever enters JS next.
@@ -1421,7 +1334,6 @@ fn __bun_release_task_unrun(task: bun_event_loop::Task) {
             // SAFETY: as `release!`.
             unsafe { bun_jsc::job::release_unrun_erased(task.ptr) }
         }
-        task_tag::AsyncModule => release!(bun_jsc::async_module::AsyncModule),
         task_tag::BakeHotReloadEvent => release!(BakeHotReloadEvent),
         task_tag::BundleV2DeferredBatchTask => release!(BundleV2DeferredBatchTask),
         task_tag::BundleV2PluginResolve => {
@@ -1459,8 +1371,6 @@ fn __bun_release_task_unrun(task: bun_event_loop::Task) {
         task_tag::HTMLRewriterBackgroundPull => {
             release!(crate::api::html_rewriter::RewriterPipeBackgroundPull)
         }
-        task_tag::RunTestsTask => release!(crate::test_runner::bun_test::RunTestsTask),
-        task_tag::ValkeyDeferredFailure => release!(crate::valkey_jsc::valkey::DeferredFailure),
         task_tag::DnsErrorDeferred => release!(crate::dns_jsc::cares_jsc::ErrorDeferredTask),
         task_tag::HandledPromise => release!(bun_jsc::virtual_machine_exports::HandledPromiseTask),
         task_tag::GraphContextStopAgain => {
@@ -1484,7 +1394,6 @@ fn __bun_release_task_unrun(task: bun_event_loop::Task) {
         task_tag::NativeBrotli => release!(NativeBrotli),
         task_tag::NativeZlib => release!(NativeZlib),
         task_tag::NativeZstd => release!(NativeZstd),
-        task_tag::PollPendingModulesTask => release!(bun_jsc::async_module::Queue),
         task_tag::PosixSignalTask => release!(PosixSignalTask),
         task_tag::MemoryPressureTask => release!(crate::node::memory_pressure::MemoryPressureTask),
         task_tag::ProcessWaiterThreadTask => {
@@ -1530,9 +1439,6 @@ fn __bun_release_task_unrun(task: bun_event_loop::Task) {
             release!(crate::napi::uv_posix::UvHandle);
             #[cfg(not(unix))]
             unreachable!("posix-only tag");
-        }
-        task_tag::ValkeyDeferredClose => {
-            release!(crate::valkey_jsc::js_valkey::ValkeyDeferredClose)
         }
         // ── Windows-only producers ───────────────────────────────────────
         task_tag::GetAddrInfoLibuvComplete => {

@@ -17,7 +17,6 @@
 #include <wtf/JSONValues.h>
 
 #include "InspectorLifecycleAgent.h"
-#include "InspectorTestReporterAgent.h"
 #include "InspectorBunFrontendDevServerAgent.h"
 #include "InspectorHTTPServerAgent.h"
 
@@ -137,8 +136,6 @@ public:
             hasConnected = true;
             globalObject->inspectorController().registerAlternateAgent(
                 WTF::makeUniqueRef<Inspector::InspectorLifecycleAgent>(*globalObject));
-            globalObject->inspectorController().registerAlternateAgent(
-                WTF::makeUniqueRef<Inspector::InspectorTestReporterAgent>(*globalObject));
             globalObject->inspectorController().registerAlternateAgent(
                 WTF::makeUniqueRef<Inspector::InspectorBunFrontendDevServerAgent>(*globalObject));
             globalObject->inspectorController().registerAlternateAgent(

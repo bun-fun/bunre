@@ -3,14 +3,13 @@
 
 // --- Getters ---
 #define FOR_EACH_GETTER(macro) \
-    macro(Archive) \
+    macro(CryptoHasher) \
     macro(FFI) \
     macro(FetchSession) \
     macro(Image) \
     macro(markdown) \
     macro(S3Client) \
     macro(Terminal) \
-    macro(ValkeyClient) \
     macro(argv) \
     macro(cron) \
     macro(cwd) \
@@ -20,7 +19,6 @@
     macro(isStandaloneExecutable) \
     macro(origin) \
     macro(s3) \
-    macro(valkey) \
 
 // --- Callbacks ---
 #define FOR_EACH_CALLBACK(macro) \

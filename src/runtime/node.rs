@@ -113,12 +113,6 @@ pub(crate) mod node_cluster_binding;
 #[path = "node/node_net_binding.rs"]
 pub(crate) mod node_net_binding;
 
-#[path = "node/node_quic_binding.rs"]
-pub(crate) mod node_quic_binding;
-
-#[path = "node/quic/mod.rs"]
-pub(crate) mod quic;
-
 #[path = "node/node_http_binding.rs"]
 pub(crate) mod node_http_binding;
 

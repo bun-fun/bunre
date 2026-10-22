@@ -292,7 +292,6 @@ public:
     JSC::JSFunction* requireESMFromHijackedExtension() const { return m_commonJSRequireESMFromHijackedExtensionFunction.getInitializedOnMainThread(this); }
 
     Structure* NodeVMGlobalObjectStructure() const { return m_cachedNodeVMGlobalObjectStructure.getInitializedOnMainThread(this); }
-    JSObject* lazyTestModuleObject() const { return m_lazyTestModuleObject.getInitializedOnMainThread(this); }
     Structure* CommonJSModuleObjectStructure() const { return m_commonJSModuleObjectStructure.getInitializedOnMainThread(this); }
     Structure* JSSocketAddressDTOStructure() const { return m_JSSocketAddressDTOStructure.getInitializedOnMainThread(this); }
     Structure* JSReactElementStructure() const { return m_JSReactElementStructure.getInitializedOnMainThread(this); }
@@ -390,10 +389,6 @@ public:
         Bun__HTTPRequestContextDebugTLS__onResolveStream,
         jsFunctionOnLoadObjectResultResolve,
         jsFunctionOnLoadObjectResultReject,
-        jsFunctionMockModuleFactoryResolve,
-        jsFunctionMockModuleFactoryReject,
-        Bun__TestScope__Describe2__bunTestThen,
-        Bun__TestScope__Describe2__bunTestCatch,
         Bun__HTMLRewriter__onHandlerResolve,
         Bun__HTMLRewriter__onHandlerReject,
         Bun__onResolveEntryPointResult,
@@ -586,12 +581,6 @@ public:
     V(private, LazyClassStructure, m_JSStringDecoderClassStructure)                                          \
     V(private, LazyClassStructure, m_JSModuleGraphClassStructure)                                            \
     V(private, LazyPropertyOfGlobalObject<JSObject>, m_JSFFICStringConstructor)                              \
-    V(public, LazyClassStructure, m_JSDatabaseSyncClassStructure)                                            \
-    V(public, LazyClassStructure, m_JSStatementSyncClassStructure)                                           \
-    V(public, LazyClassStructure, m_JSStatementSyncIteratorClassStructure)                                   \
-    V(public, LazyClassStructure, m_JSNodeSqliteSessionClassStructure)                                       \
-    V(public, LazyClassStructure, m_JSNodeSqliteLimitsClassStructure)                                        \
-    V(public, LazyClassStructure, m_JSNodeSqliteTagStoreClassStructure)                                      \
     V(private, LazyClassStructure, m_NapiClassStructure)                                                     \
     V(private, LazyClassStructure, m_callSiteStructure)                                                      \
     V(public, LazyClassStructure, m_JSBufferClassStructure)                                                  \
@@ -644,8 +633,6 @@ public:
     V(private, LazyPropertyOfGlobalObject<JSWeakMap>, m_moduleSourceValueMap)                                \
     V(private, WriteBarrier<JSObject>, m_lazyRequireCacheObject)                                             \
     V(public, LazyPropertyOfGlobalObject<Bun::JSCommonJSExtensions>, m_lazyRequireExtensionsObject)          \
-    V(private, LazyPropertyOfGlobalObject<JSObject>, m_lazyTestModuleObject)                                 \
-    V(public, LazyPropertyOfGlobalObject<JSObject>, m_testMatcherUtilsObject)                                \
     /* Bun::LintHost, for the JavaScript plugins of `bun lint` */                                            \
     V(public, LazyPropertyOfGlobalObject<JSObject>, m_lintHost)                                              \
     V(public, LazyPropertyOfGlobalObject<Structure>, m_cachedNodeVMGlobalObjectStructure)                    \

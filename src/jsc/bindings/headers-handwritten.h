@@ -64,7 +64,6 @@ enum class UWSResponseKind : int32_t {
     TCP = 0,
     SSL = 1,
     H2 = 2,
-    H3 = 3,
 };
 #endif
 

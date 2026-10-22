@@ -1,7 +1,7 @@
 #ifndef UWS_H3REQUEST_H
 #define UWS_H3REQUEST_H
 
-#include "quic.h"
+#include "http_headers.h"
 #include "QueryParser.h"
 
 #include <cctype>
@@ -12,16 +12,13 @@ namespace uWS {
 
 /* Mirrors uWS::HttpRequest's surface so the same router/handler shape works.
  * Backed by an already-decoded header list (QPACK for HTTP/3, HPACK for
- * HTTP/2 — both hand us the same us_quic_header_t array); pseudo headers
+ * HTTP/2 — both hand us the same us_http_header_t array); pseudo headers
  * (:method, :path, :authority) become method/url/host. */
 struct Http3Request {
 
-    Http3Request(us_quic_stream_t *s)
-        : Http3Request(us_quic_stream_header(s, 0), us_quic_stream_header_count(s)) {}
-
-    Http3Request(const us_quic_header_t *list, unsigned int count) : headers(list), headerCount(count) {
+    Http3Request(const us_http_header_t *list, unsigned int count) : headers(list), headerCount(count) {
         for (unsigned int i = 0; i < headerCount; i++) {
-            const us_quic_header_t *h = &headers[i];
+            const us_http_header_t *h = &headers[i];
             std::string_view name{h->name, h->name_len};
             std::string_view value{h->value, h->value_len};
             if (name == ":method") {
@@ -70,7 +67,7 @@ struct Http3Request {
     std::string_view getHeader(std::string_view lowerCasedHeader) {
         if (lowerCasedHeader == "host") return authority;
         for (unsigned int i = 0; i < headerCount; i++) {
-            const us_quic_header_t *h = &headers[i];
+            const us_http_header_t *h = &headers[i];
             if (h->name_len == lowerCasedHeader.size() &&
                 equalsIgnoreCase({h->name, h->name_len}, lowerCasedHeader)) {
                 return {h->value, h->value_len};
@@ -81,7 +78,7 @@ struct Http3Request {
 
     template <typename Fn> void forEachHeader(Fn &&fn) {
         for (unsigned int i = 0; i < headerCount; i++) {
-            const us_quic_header_t *h = &headers[i];
+            const us_http_header_t *h = &headers[i];
             std::string_view name{h->name, h->name_len};
             if (!name.empty() && name[0] == ':') continue;
             /* RFC 9114 §4.3.1: a request MAY include both :authority and a
@@ -110,7 +107,7 @@ private:
         return true;
     }
 
-    const us_quic_header_t *headers;
+    const us_http_header_t *headers;
     unsigned int headerCount;
     std::string_view method, url, fullUrl, query, authority;
     std::pair<int, std::string_view *> params{-1, nullptr};

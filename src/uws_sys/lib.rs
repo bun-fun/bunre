@@ -434,16 +434,13 @@ pub mod body_reader_mixin;
 pub mod connecting_socket;
 #[path = "h2.rs"]
 pub mod h2;
-#[path = "h3.rs"]
-pub mod h3;
-#[path = "InternalLoopData.rs"]
+#[path = "http_request.rs"]
+pub mod http_request;#[path = "InternalLoopData.rs"]
 pub mod internal_loop_data;
 #[path = "ListenSocket.rs"]
 pub mod listen_socket;
 #[path = "Loop.rs"]
 pub mod loop_;
-#[path = "quic.rs"]
-pub mod quic;
 #[path = "Request.rs"]
 pub mod request;
 #[path = "Response.rs"]

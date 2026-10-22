@@ -74,7 +74,6 @@ pub enum InHeap {
     #[default]
     None,
     Regular,
-    Fake,
 }
 
 impl EventLoopTimer {
@@ -197,35 +196,19 @@ pub enum Tag {
     PostgresSQLConnectionMaxLifetime,
     MySQLConnectionTimeout,
     MySQLConnectionMaxLifetime,
-    ValkeyConnectionTimeout,
-    ValkeyConnectionReconnect,
     SubprocessTimeout,
     DevServerSweepSourceMaps,
     DevServerMemoryVisualizerTick,
     AbortSignalTimeout,
     DateHeaderTimer,
-    BunTest,
     EventLoopDelayMonitor,
     CronJob,
     GcRepeating,
-    QuicEndpoint,
     /// An N-API addon's `uv_timer_t` (POSIX, where Bun emulates libuv).
     UvTimer,
 }
 
 impl Tag {
-    /// Whether `jest.useFakeTimers()` captures this timer. Only timers a
-    /// program schedules itself are faked; runtime-internal timeouts stay on
-    /// the real clock, as in Jest. A fakeable owner arms with
-    /// `AllowMockedTime` and has a release arm in `FakeTimers::clear`; every
-    /// other owner arms with `ForceRealTime`, the clock the real heap is
-    /// drained against.
-    pub fn allow_fake_timers(self) -> bool {
-        matches!(
-            self,
-            Tag::TimeoutObject | Tag::AbortSignalTimeout | Tag::CronJob
-        )
-    }
 }
 
 /// Stamp out one `unsafe fn $method(*const EventLoopTimer) -> *mut Self` per

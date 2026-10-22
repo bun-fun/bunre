@@ -192,7 +192,6 @@ fn make_client<'a>(
         proxy_authorization: None,
         proxy_tunnel: None,
         h2: None,
-        h3: None,
         pending_h2: None,
         signals,
         async_http_id,

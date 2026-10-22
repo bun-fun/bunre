@@ -79,9 +79,9 @@ use bun_shell_parser::braces as Braces;
 use bun_sys::{self as sys, Fd, FdExt as _};
 use bun_zlib as zlib;
 
+use crate::api::{HashObject, JSON5Object, TOMLObject, UnsafeObject, XMLObject, YAMLObject};
+use crate::crypto as Crypto;
 use crate::node;
-use crate::test_runner::jest::Jest;
-use crate::valkey_jsc::js_valkey::SubscriptionCtx;
 use bun_collections::index_sort;
 use bun_jsc::EncodedSliceJsc as _;
 use bun_jsc::call_frame::ArgumentsSlice;
@@ -126,9 +126,6 @@ mod static_adapters {
         crate::api::js_bun_spawn_bindings::spawn_sync(&g.js_thread_of_caller(cf), a0, a1)
     }
 
-    pub(super) fn js_bundler_build(g: &JSGlobalObject, cf: &CallFrame) -> JsResult<JSValue> {
-        crate::api::js_bundler::JSBundler::build_fn(g, cf)
-    }
     /// `Bun.$` parsed-script constructor — wraps the marked-argument-buffer host fn.
     pub(super) fn parsed_shell_script_create(
         g: &JSGlobalObject,
@@ -238,11 +235,14 @@ pub(crate) mod bun_object {
 
     // --- Callbacks ---
     export_callbacks! {
-        BunObject_callback_build => super::static_adapters::js_bundler_build,
+        BunObject_callback_allocUnsafe => super::alloc_unsafe,
         BunObject_callback_color => bun_css_jsc::js_function_color,
         BunObject_callback_connect => super::static_adapters::listener_connect,
         BunObject_callback_file => crate::webcore::blob::construct_bun_file,
-        BunObject_callback_jest => Jest::call,
+        BunObject_callback_gunzipSync => JSZlib::gunzip_sync,
+        BunObject_callback_gzipSync => JSZlib::gzip_sync,
+        BunObject_callback_indexOfLine => super::index_of_line,
+        BunObject_callback_inflateSync => JSZlib::inflate_sync,
         BunObject_callback_listen => super::static_adapters::listener_listen,
         BunObject_callback_resolve => super::resolve,
         BunObject_callback_resolveSync => super::resolve_sync,
@@ -263,11 +263,16 @@ pub(crate) mod bun_object {
 
     // --- Lazy property callbacks ---
     export_lazy_prop_callbacks! {
-        BunObject_lazyPropCb_Archive => super::get_archive_constructor,
+        BunObject_lazyPropCb_CryptoHasher => Crypto::CryptoHasher::getter,
+        // BunObject_lazyPropCb_CSRF => super::get_csrf_object,
         BunObject_lazyPropCb_FFI => crate::ffi::ffi_object_draft::getter,
         BunObject_lazyPropCb_FetchSession => super::get_fetch_session_constructor,
         BunObject_lazyPropCb_Image => super::get_image_constructor,
         BunObject_lazyPropCb_markdown => super::get_markdown_object,
+        BunObject_lazyPropCb_TOML => super::get_toml_object,
+        BunObject_lazyPropCb_JSON5 => super::get_json5_object,
+        BunObject_lazyPropCb_XML => super::get_xml_object,
+        BunObject_lazyPropCb_YAML => super::get_yaml_object,
         BunObject_lazyPropCb_argv => super::get_argv,
         BunObject_lazyPropCb_cron => super::get_cron_object,
         BunObject_lazyPropCb_cwd => super::get_cwd,
@@ -278,8 +283,8 @@ pub(crate) mod bun_object {
         BunObject_lazyPropCb_origin => super::get_origin,
         BunObject_lazyPropCb_S3Client => super::get_s3_client_constructor,
         BunObject_lazyPropCb_s3 => super::get_s3_default_client,
-        BunObject_lazyPropCb_ValkeyClient => super::get_valkey_client_constructor,
-        BunObject_lazyPropCb_valkey => super::get_valkey_default_client,
+        // BunObject_lazyPropCb_ValkeyClient => super::get_valkey_client_constructor,
+        // BunObject_lazyPropCb_valkey => super::get_valkey_default_client,
         BunObject_lazyPropCb_Terminal => super::get_terminal_constructor,
     }
     // --- Lazy property callbacks ---
@@ -1507,12 +1512,25 @@ fn get_fetch_session_constructor(global_this: &JSGlobalObject, _: &JSObject) -> 
     jsc::codegen::js::get_constructor::<crate::webcore::fetch::FetchSession>(global_this)
 }
 
+fn get_file_system_router(global_this: &JSGlobalObject, _: &JSObject) -> JSValue {
+    jsc::codegen::js::get_constructor::<crate::api::filesystem_router::FileSystemRouter>(
+        global_this,
+    )
+}
+
+fn get_hash_object(global_this: &JSGlobalObject, _: &JSObject) -> JSValue {
+    HashObject::create(global_this)
+}
+
+fn get_jsonc_object(global_this: &JSGlobalObject, _: &JSObject) -> JSValue {
+    crate::api::jsonc_object::create(global_this)
+}
 fn get_markdown_object(global_this: &JSGlobalObject, _: &JSObject) -> JSValue {
     crate::api::markdown_object::create(global_this)
 }
 
-fn get_archive_constructor(global_this: &JSGlobalObject, _: &JSObject) -> JSValue {
-    jsc::codegen::js::get_constructor::<crate::api::archive::Archive>(global_this)
+fn get_glob_constructor(global_this: &JSGlobalObject, _: &JSObject) -> JSValue {
+    jsc::codegen::js::get_constructor::<crate::api::glob::Glob>(global_this)
 }
 
 fn get_image_constructor(global_this: &JSGlobalObject, _: &JSObject) -> JSValue {
@@ -1572,48 +1590,6 @@ fn get_s3_default_client(global_this: &JSGlobalObject, _: &JSObject) -> JsResult
     js_client.ensure_still_alive();
     rare.s3_default_client = StrongOptional::create(js_client, global_this);
     Ok(js_client)
-}
-
-fn get_valkey_default_client(global_this: &JSGlobalObject, _: &JSObject) -> JSValue {
-    use crate::valkey_jsc::JSValkeyClient;
-
-    // `Bun.redis` is the realm's: not owned (and closed at dispose()) by whichever
-    // Bun.ModuleGraph reads the property first.
-    let vm = global_this.bun_vm();
-    let valkey = match JSValkeyClient::create_no_js_no_pubsub(
-        &global_this.js_thread(vm.root_context()),
-        &[JSValue::UNDEFINED],
-    ) {
-        Ok(p) => p,
-        Err(jsc::JsError::Thrown) => return JSValue::ZERO,
-        Err(err) => {
-            let _ =
-                global_this.throw_error(crate::Error::from(err), "Failed to create Redis client");
-            return JSValue::ZERO;
-        }
-    };
-
-    let as_js = JSValkeyClient::ptr_to_js(valkey, global_this);
-
-    // SAFETY: `valkey` is a fresh heap allocation owned by the JS wrapper; we
-    // hold the only reference for field init below.
-    let valkey_ref = unsafe { &*valkey };
-    valkey_ref.this_value.set(jsc::JsRef::init_weak(as_js));
-    match SubscriptionCtx::init(valkey_ref) {
-        Ok(ctx) => valkey_ref._subscription_ctx.set(ctx),
-        Err(jsc::JsError::Thrown) => return JSValue::ZERO,
-        Err(err) => {
-            let _ =
-                global_this.throw_error(crate::Error::from(err), "Failed to create Redis client");
-            return JSValue::ZERO;
-        }
-    }
-
-    as_js
-}
-
-fn get_valkey_client_constructor(global_this: &JSGlobalObject, _: &JSObject) -> JSValue {
-    jsc::codegen::js::get_constructor::<crate::valkey_jsc::JSValkeyClient>(global_this)
 }
 
 fn get_terminal_constructor(global_this: &JSGlobalObject, _: &JSObject) -> JSValue {

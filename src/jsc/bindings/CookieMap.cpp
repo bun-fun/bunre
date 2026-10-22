@@ -2,7 +2,6 @@
 #include "JSCookieMap.h"
 #include "JSDOMExceptionHandling.h"
 #include <bun-uws/src/App.h>
-#include <bun-uws/src/Http3Response.h>
 #include <bun-uws/src/Http2Context.h>
 #include "helpers.h"
 #include <wtf/text/ParsingUtilities.h>
@@ -45,9 +44,6 @@ extern "C" void CookieMap__write(CookieMap* cookie_map, JSC::JSGlobalObject* glo
         break;
     case UWSResponseKind::H2:
         CookieMap__writeFetchHeadersToUWSResponse(cookie_map, global_this, reinterpret_cast<uWS::Http2Response*>(arg2));
-        break;
-    case UWSResponseKind::H3:
-        CookieMap__writeFetchHeadersToUWSResponse(cookie_map, global_this, reinterpret_cast<uWS::Http3Response*>(arg2));
         break;
     }
 }

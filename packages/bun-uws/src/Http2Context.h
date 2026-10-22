@@ -29,6 +29,7 @@
 #include "HttpResponse.h"
 #include "SocketKinds.h"
 #include "Http2ResponseData.h"
+#include "http_headers.h"
 #include "Http3Request.h"
 
 #include <lshpack.h>
@@ -616,7 +617,7 @@ struct Http2Connection {
     /* false: the connection was closed (re-entrancy, or the peer ran out of
      * reset tokens — a stream it forced us to reset counts like one it reset). */
     inline bool streamError(uint32_t streamId, Http2Response *stream, http2::ErrorCode code);
-    inline bool dispatchRequest(Http2Response *stream, const us_quic_header_t *headers, unsigned count);
+    inline bool dispatchRequest(Http2Response *stream, const us_http_header_t *headers, unsigned count);
 };
 
 struct Http2Context {
@@ -652,7 +653,7 @@ struct Http2Context {
      * header bytes + list, and the HPACK encode buffer. dispatchDepth guards
      * the (node:http-only) case of a dispatch nesting another. */
     std::vector<char> decodeBuffer;
-    std::vector<us_quic_header_t> decodedHeaders;
+    std::vector<us_http_header_t> decodedHeaders;
     std::vector<unsigned char> encodeBuffer;
     int dispatchDepth = 0;
 
@@ -1557,10 +1558,10 @@ inline bool Http2Connection::handleHeaderBlock(uint32_t streamId, uint8_t flags,
     size_t hardCap = std::max<size_t>((size_t) limit * http2::HEADER_BLOCK_HARD_CAP_FACTOR, http2::LOCAL_MAX_FRAME_SIZE);
     if (length > hardCap) return connectionError(http2::ERR_ENHANCE_YOUR_CALM);
     std::vector<char> localBuffer;
-    std::vector<us_quic_header_t> localList;
+    std::vector<us_http_header_t> localList;
     bool nested = ctx->dispatchDepth > 0;
     std::vector<char> &buf = nested ? localBuffer : ctx->decodeBuffer;
-    std::vector<us_quic_header_t> &list = nested ? localList : ctx->decodedHeaders;
+    std::vector<us_http_header_t> &list = nested ? localList : ctx->decodedHeaders;
     if (buf.size() < (size_t) limit + 64) buf.resize((size_t) limit + 64);
     list.clear();
     size_t used = 0, decoded = 0, fields = 0;
@@ -1591,7 +1592,7 @@ inline bool Http2Connection::handleHeaderBlock(uint32_t streamId, uint8_t flags,
                         (const char *) (uintptr_t) (x.buf + x.val_offset - buf.data()), x.val_len, x.hpack_index});
         used += lsxpack_header_get_dec_size(&x);
     }
-    for (us_quic_header_t &h : list) {
+    for (us_http_header_t &h : list) {
         h.name = buf.data() + (uintptr_t) h.name;
         h.value = buf.data() + (uintptr_t) h.value;
     }
@@ -1605,7 +1606,7 @@ inline bool Http2Connection::handleHeaderBlock(uint32_t streamId, uint8_t flags,
         if (existing->remoteClosed) return streamError(streamId, existing, http2::ERR_STREAM_CLOSED);
         bool badTrailer = !endStream || tooLarge;
         for (size_t i = 0; !badTrailer && i < list.size(); i++) {
-            const us_quic_header_t &h = list[i];
+            const us_http_header_t &h = list[i];
             badTrailer = h.name[0] == ':' || !http2::validFieldName(h.name, h.name_len) || !http2::validFieldValue(h.value, h.value_len);
         }
         if (badTrailer) return streamError(streamId, existing, http2::ERR_PROTOCOL_ERROR);
@@ -1657,7 +1658,7 @@ inline bool Http2Connection::handleHeaderBlock(uint32_t streamId, uint8_t flags,
     unsigned seen = 0; /* 1 :method, 2 :scheme, 4 :path, 8 :authority */
     int64_t contentLength = -1;
     std::string_view authority, host, path, method;
-    for (const us_quic_header_t &h : list) {
+    for (const us_http_header_t &h : list) {
         std::string_view name{h.name, h.name_len}, value{h.value, h.value_len};
         http2::Field f = http2::classify(h.qpack_index, name);
         if (f == http2::Field::Other && !http2::validFieldName(h.name, h.name_len)) { malformed = true; break; }
@@ -1716,7 +1717,7 @@ inline bool Http2Connection::handleHeaderBlock(uint32_t streamId, uint8_t flags,
     return dispatchRequest(stream, list.data(), (unsigned) list.size());
 }
 
-inline bool Http2Connection::dispatchRequest(Http2Response *stream, const us_quic_header_t *headers, unsigned count) {
+inline bool Http2Connection::dispatchRequest(Http2Response *stream, const us_http_header_t *headers, unsigned count) {
     Http2Request req(headers, count);
     if (!(ctx->parentFlags && ctx->parentFlags->usingCustomExpectHandler) && req.getHeader("expect") == "100-continue") {
         stream->writeContinue();

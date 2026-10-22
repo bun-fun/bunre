@@ -912,36 +912,6 @@ JSC_DEFINE_HOST_FUNCTION(functionDeserialize, (JSGlobalObject * globalObject, Ca
     RELEASE_AND_RETURN(throwScope, JSValue::encode(result));
 }
 
-extern "C" JSC::EncodedJSValue ByteRangeMapping__findExecutedLines(
-    JSC::JSGlobalObject*, const BunString* sourceURL, bool ignoreSourceMap);
-
-JSC_DEFINE_HOST_FUNCTION(functionCodeCoverageForFile,
-    (JSGlobalObject * globalObject,
-        CallFrame* callFrame))
-{
-    VM& vm = globalObject->vm();
-    auto throwScope = DECLARE_THROW_SCOPE(vm);
-
-    String fileName = callFrame->argument(0).toWTFString(globalObject);
-    RETURN_IF_EXCEPTION(throwScope, {});
-    bool ignoreSourceMap = callFrame->argument(1).toBoolean(globalObject);
-
-    BunString fileNameBunString = Bun::toString(fileName);
-    JSValue row = JSValue::decode(ByteRangeMapping__findExecutedLines(globalObject, &fileNameBunString, ignoreSourceMap));
-    RETURN_IF_EXCEPTION(throwScope, {});
-
-    if (row.isNull()) {
-        throwException(globalObject, throwScope,
-            createError(globalObject, "No source for file"_s));
-        return {};
-    }
-
-    if (row.isUndefined()) {
-        RELEASE_AND_RETURN(throwScope, JSC::JSValue::encode(JSC::constructEmptyArray(globalObject, nullptr, 0)));
-    }
-
-    return JSValue::encode(row);
-}
 
 JSC_DEFINE_HOST_FUNCTION(functionEstimateDirectMemoryUsageOf, (JSGlobalObject * globalObject, CallFrame* callFrame))
 {
@@ -1025,7 +995,6 @@ DEFINE_NATIVE_MODULE(BunJSC)
     putNativeFn(Identifier::fromString(vm, "getProtectedObjects"_s), functionGetProtectedObjects);
     putNativeFn(Identifier::fromString(vm, "generateHeapSnapshotForDebugging"_s), functionGenerateHeapSnapshotForDebugging);
     putNativeFn(Identifier::fromString(vm, "profile"_s), functionRunProfiler);
-    putNativeFn(Identifier::fromString(vm, "codeCoverageForFile"_s), functionCodeCoverageForFile);
     putNativeFn(Identifier::fromString(vm, "setTimeZone"_s), functionSetTimeZone);
     putNativeFn(Identifier::fromString(vm, "serialize"_s), functionSerialize);
     putNativeFn(Identifier::fromString(vm, "deserialize"_s), functionDeserialize);

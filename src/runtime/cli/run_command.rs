@@ -30,7 +30,6 @@ use bun_which::which;
 use crate::cli;
 use crate::cli::arguments;
 use crate::cli::command::{ContextData, Tag as CommandTag};
-use crate::cli::shell_completions::ShellCompletions;
 
 bun_core::declare_scope!(RUN_LOG, visible);
 
@@ -228,48 +227,20 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
             Some(ZStr::from_buf(&buf[..], len))
         })
     }
-
-    // Look for invocations of any: `yarn run` / `yarn $cmd` / `pnpm run` /
-    // `npm run` / `npx` / `pnpx` and replace them with `bun run` / `bun x`.
-    //
-    // so lifecycle scripts can call it without a bun_runtime → bun_install
-    // → bun_runtime cycle. This is a thin re-export for `bun run` /
-    // filter_run / multi_run callers.
+    /// Appends `script` to `copy_script`, which the caller then hands to the
+    /// shell. Lifecycle scripts that shell out to another package manager
+    /// (`yarn run`, `npm run`, `pnpx`, ...) used to be rewritten to `bun run` /
+    /// `bun x` here by the install tier; bunre has no install tier, so the body
+    /// is appended verbatim and a `yarn` / `npm` on PATH still works.
     #[inline]
     pub(crate) fn replace_package_manager_run(
         copy_script: &mut Vec<u8>,
         script: &[u8],
     ) -> crate::Result<()> {
-        bun_install::lifecycle_script_runner::replace_package_manager_run(copy_script, script)
-            .map_err(Into::into)
+        copy_script.extend_from_slice(script);
+        Ok(())
     }
 
-    /// Spawns the script body via the bun-shell or system shell and exits on
-    /// non-zero.
-    ///
-    /// `passthrough` is `&[Box<[u8]>]` to match `ctx.passthrough` directly.
-    pub(crate) fn run_package_script_foreground(
-        ctx: &mut ContextData,
-        original_script: &[u8],
-        name: &[u8],
-        cwd: &[u8],
-        env: &mut DotEnv::Loader,
-        passthrough: &[Box<[u8]>],
-        silent: bool,
-        use_system_shell: bool,
-    ) -> crate::Result<()> {
-        Self::run_package_script_foreground_with_shell_path(
-            ctx,
-            original_script,
-            name,
-            cwd,
-            env,
-            passthrough,
-            silent,
-            use_system_shell,
-            None,
-        )
-    }
 
     /// Like [`Self::run_package_script_foreground`], but puts the `node_modules/.bin` of `cwd` and
     /// of its parents at the front of `PATH` while the script runs.
@@ -586,29 +557,6 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
         Ok(())
     }
 
-    /// Allocates a
-    /// process-lifetime `Transpiler`, primes its resolver/env, reads the
-    /// top-level `DirInfo`, configures the bundler linker / JSX runtime, and
-    /// seeds the `npm_*` env vars.
-    ///
-    /// Returns a raw `*mut DirInfo` borrowed from the resolver's directory
-    /// cache (process-lifetime).
-    ///
-    /// Hot-path note: the common `bun run <package.json script>` case never
-    /// transpiles anything through this `Transpiler` (it shells out / boots a
-    /// fresh VM with its own transpiler), so it should call
-    /// [`Self::configure_env_for_run_without_linker`] instead — that skips the
-    /// `configure_linker()` + `load_tsconfig_json` work, which is the single
-    /// largest block of bundler/linker code otherwise faulted in by `bun run`.
-    pub(crate) fn configure_env_for_run(
-        ctx: &mut ContextData,
-        this_transpiler: &mut ::core::mem::MaybeUninit<Transpiler<'static>>,
-        env: Option<*mut DotEnv::Loader>,
-        opts: ConfigureEnvOptions,
-    ) -> crate::Result<bun_resolver::DirInfoRef> {
-        Self::configure_env_for_run_impl(ctx, this_transpiler, env, opts, true)
-    }
-
     /// Like [`Self::configure_env_for_run`] but does **not** construct the
     /// bundler linker or enable `load_tsconfig_json` — for callers that only
     /// use the returned `Transpiler` for module resolution / env / `$PATH`
@@ -744,7 +692,7 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
             .put(b"npm_config_local_prefix", top_level_dir)
             .expect("unreachable");
 
-        bun_install::RunCommand::seed_script_env(env_loader);
+        Self::seed_script_env(env_loader);
 
         if let Some(package_json) = root_dir_info.enclosing_package_json {
             if !package_json.name.is_empty() {
@@ -1115,7 +1063,7 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
                 runner_arena().alloc_slice_copy(cron_script.as_bytes());
 
             // entry_path must end with /[eval] for the transpiler to use eval_source
-            let mut cwd_buf = bun_paths::path_buffer_pool::get();
+            let mut cwd_buf = PathBuffer::uninit();
             let cwd = bun_core::getcwd_or_exe_dir(&mut cwd_buf);
             let cwd_bytes = cwd.as_bytes();
             let mut eval_path: Vec<u8> = Vec::with_capacity(cwd_bytes.len() + EVAL_TRIGGER.len());
@@ -1222,9 +1170,6 @@ Full documentation is available at <magenta>https://bun.com/docs/cli/run<r>
         // argv belongs to the compiled program, so a `-e` or `-p` in it is not ours.
         bun_jsc::initialize(bun_jsc::InitializeOptions::default());
         bun_analytics::features::standalone_executable.fetch_add(1, Ordering::Relaxed);
-        if graph.flags.contains(GraphFlags::CROSS_COMPILED_BYTECODE) {
-            bun_analytics::features::cross_compiled_bytecode.fetch_add(1, Ordering::Relaxed);
-        }
         bun_ast::initialize_store();
 
         // Load bunfig.toml unless disabled by compile flags. Config loading
@@ -1450,35 +1395,6 @@ impl Run<'_> {
 
         Self::add_conditional_globals(vm, ctx);
 
-        // ── redis preconnect (must run under the API lock) ─────────────────
-        'do_redis_preconnect: {
-            if !ctx.runtime_options.redis_preconnect {
-                break 'do_redis_preconnect;
-            }
-            // Go through the global object's getter because `Bun.redis` is a
-            // PropertyCallback (no direct WriteBarrier handle to read).
-            let global = vm.global();
-            let preconnect = || -> bun_jsc::JsResult<()> {
-                let Some(bun_object) = global.to_js_value().get(global, "Bun")? else {
-                    return Ok(());
-                };
-                let Some(redis) = bun_object.get(global, "redis")? else {
-                    return Ok(());
-                };
-                let Some(client) = redis.as_::<crate::valkey_jsc::js_valkey::JSValkeyClient>()
-                else {
-                    return Ok(());
-                };
-                // SAFETY: `as_` returns a live `m_ctx` pointer owned by the JS
-                // wrapper; accessed here under the API lock.
-                unsafe { &*client }.do_connect(global, redis)?;
-                Ok(())
-            };
-            // The process entry is the outermost frame: a preconnect that threw
-            // is reported here, before the entry point loads.
-            crate::dispatch::fold(preconnect());
-        }
-
         // ── postgres/sql preconnect ───────────────────────────────────────
         'do_postgres_preconnect: {
             if !ctx.runtime_options.sql_preconnect {
@@ -1609,12 +1525,8 @@ impl Run<'_> {
             Some(Err(err)) => entry_point_load_failed(vm, &err.into()),
         }
 
-        // Drop what transpiling and linking the entry graph left behind before settling into the event loop. A
-        // standalone executable has no transpiler garbage, and its unlinked code blocks came from the embedded bytecode
-        // cache — deleting them here only means decoding them again on first call — so leave its heap to the collector.
-        if vm.standalone_module_graph.is_none()
-            && (vm.is_event_loop_alive() || vm.event_loop_ref().tick_concurrent_with_count() > 0)
-        {
+        // don't run the GC if we don't actually need to
+        if vm.is_event_loop_alive() || vm.event_loop_ref().tick_concurrent_with_count() > 0 {
             vm.global().vm().release_weak_refs();
             // `bun_alloc::Arena` has no per-heap collect to run alongside this
             // GC; it would only be a memory-usage hint, not correctness.
@@ -1883,32 +1795,120 @@ impl RunCommand {
         Global::exit(1);
     }
 
+    // This path is almost always a path to a user directory. So it cannot be
+    // inlined like our uses of /tmp. On Windows use `GetTempPathW` /
+    // `RealFS.platformTempDir` instead — this const is POSIX-only and
+    // referencing it on Windows is a compile error.
+    //
+    /// `/tmp/bun-node-<sha>` (or debug variant). Windows builds compute the path
+    /// at runtime via GetTempPathW, so this constant is POSIX-only.
+    ///
+    /// NOTE: the SHA alone does not uniquely identify a binary — two local
+    /// builds at the same commit share this dir. `create_fake_temporary_node_executable`
+    /// therefore re-points a stale link on EEXIST instead of trusting it.
+    #[cfg(not(windows))]
+    pub const BUN_NODE_DIR: &'static str = {
+        // `const_format::concatcp!` cannot host
+        // `if` expressions inline, so split into helper consts.
+        use const_format::concatcp;
+        const TMP: &str = if cfg!(target_os = "macos") {
+            "/private/tmp"
+        } else if cfg!(target_os = "android") {
+            "/data/local/tmp"
+        } else {
+            "/tmp"
+        };
+        const SUFFIX: &str = if bun_core::env::IS_DEBUG {
+            "/bun-node-debug"
+        } else if bun_core::env::GIT_SHA_SHORT.is_empty() {
+            "/bun-node"
+        } else {
+            concatcp!("/bun-node-", bun_core::env::GIT_SHA_SHORT)
+        };
+        concatcp!(TMP, SUFFIX)
+    };
+
+
+    /// Sets the variables that both `bun run` and lifecycle scripts have in
+    /// their environment. Lives here because bunre has no install tier.
+    pub(crate) fn seed_script_env(env_loader: &mut DotEnv::Loader) {
+        if bun_io::ParentDeathWatchdog::is_enabled() {
+            let _ = env_loader.map.put_default(b"BUN_FEATURE_FLAG_NO_ORPHANS", b"1");
+        }
+
+        // Pretending to be the pinned LTS keeps scripts that parse this string
+        // from choking; there is no way to know what they actually expect.
+        let _ = env_loader.map.put_default(
+            b"npm_config_user_agent",
+            const_format::concatcp!(
+                "bun/",
+                core::Global::package_json_version,
+                " npm/? node/v",
+                bun_core::env::REPORTED_NODEJS_VERSION,
+                " ",
+                core::Global::os_name,
+                " ",
+                core::Global::arch_name,
+            )
+            .as_bytes(),
+        );
+
+        if env_loader.get(b"npm_execpath").is_none() {
+            if let Ok(self_exe) = bun_core::self_exe_path() {
+                let _ = env_loader.map.put_default(b"npm_execpath", self_exe.as_bytes());
+            }
+        }
+    }
+
     /// Returns the path to the
     /// fake `node` shim that points back at the running `bun` binary.
     pub(crate) fn bun_node_file_utf8() -> crate::Result<&'static ZStr> {
         #[cfg(not(windows))]
         {
-            Ok(bun_install::RunCommand::bun_node_dir())
+            const BUN_NODE_DIR_Z: &ZStr = {
+                const B: &[u8] = const_format::concatcp!(RunCommand::BUN_NODE_DIR, "\0").as_bytes();
+                // SAFETY: literal ends in NUL; `from_static` excludes it.
+                ZStr::from_static(B)
+            };
+            Ok(BUN_NODE_DIR_Z)
         }
         #[cfg(windows)]
         {
-            let mut shim_dir_buffer = bun_paths::w_path_buffer_pool::get();
+            use bun_sys::windows as win;
+
+            let mut temp_path_buffer = bun_paths::w_path_buffer_pool::get();
             let mut target_path_buffer = bun_paths::path_buffer_pool::get();
-            let Some(len) =
-                bun_install::RunCommand::windows_node_shim_dir(&mut shim_dir_buffer[..])
-            else {
+            // SAFETY: FFI Win32 `GetTempPathW` writes at most `nBufferLength`
+            // WCHARs (including the trailing NUL) into the caller's buffer.
+            let len = unsafe {
+                win::GetTempPathW(
+                    u32::try_from(temp_path_buffer.len()).expect("int cast"),
+                    temp_path_buffer.as_mut_ptr(),
+                )
+            } as usize;
+            if len == 0 {
                 return Err(crate::Error::FailedToGetTempPath);
-            };
+            }
 
             let converted = strings::convert_utf16_to_utf8_in_buffer(
                 &mut target_path_buffer,
-                &shim_dir_buffer[..len],
+                &temp_path_buffer[..len],
             );
 
+            // Same directory `create_fake_temporary_node_executable` plants the
+            // hardlinks in; `GetTempPathW` already ends in a backslash.
+            let dir_name: &str = if bun_core::env::IS_DEBUG {
+                "bun-node-debug"
+            } else if bun_core::env::GIT_SHA_SHORT.is_empty() {
+                "bun-node"
+            } else {
+                const_format::concatcp!("bun-node-", bun_core::env::GIT_SHA_SHORT)
+            };
             const FILE_NAME: &str = "\\node.exe";
             let conv_len = converted.len();
-            let total = conv_len + FILE_NAME.len();
-            target_path_buffer[conv_len..total].copy_from_slice(FILE_NAME.as_bytes());
+            let total = conv_len + dir_name.len() + FILE_NAME.len();
+            target_path_buffer[conv_len..conv_len + dir_name.len()].copy_from_slice(dir_name.as_bytes());
+            target_path_buffer[conv_len + dir_name.len()..total].copy_from_slice(FILE_NAME.as_bytes());
             target_path_buffer[total] = 0;
 
             // Park the
@@ -1922,21 +1922,272 @@ impl RunCommand {
         }
     }
 
-    /// Creates
-    /// `<tmp>/bun-node*/node` and `<tmp>/bun-node*/bun` symlinks (or hard
-    /// links on Windows) pointing at the running `bun` binary, then appends
-    /// that directory to `path` so child processes resolve `node` to bun.
+    /// Symlinks/hardlinks the running bun binary as
+    /// `node` + `bun` inside a temp dir and prepends that dir to `path`.
     ///
-    /// Implementation lives in `bun_install::RunCommand` (lower tier) so the
-    /// package manager can call it without depending on `bun_runtime`; this is
-    /// a thin delegate so existing `Self::` callers keep compiling.
-    #[inline]
+    /// `#[cold]`: only reached on the `bun run <script>` / lifecycle-script
+    /// slow path, never on plain `bun foo.js` startup. Forcing it into
+    /// `.text.unlikely.*` keeps it out of the hot fault-around windows that
+    /// the startup/dot benches page in (belt-and-suspenders alongside
+    /// `startup.order` regen — survives mangling-hash drift).
+    #[cold]
     pub(crate) fn create_fake_temporary_node_executable(
         path: &mut Vec<u8>,
         optional_bun_path: &mut &[u8],
-    ) -> crate::Result<()> {
-        bun_install::RunCommand::create_fake_temporary_node_executable(path, optional_bun_path)
-            .map_err(Into::into)
+    ) -> Result<(), crate::Error> {
+        // If we are already running as "node", the path should exist
+        if crate::cli::PRETEND_TO_BE_NODE.load(::core::sync::atomic::Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        #[cfg(not(windows))]
+        {
+            use const_format::concatcp;
+
+            let argv0: &ZStr = bun_core::argv().get(0).unwrap_or(bun_core::zstr!("bun"));
+
+            // PREFER `self_exe_path()` OVER `argv[0]`: on a nested `--bun`, the
+            // OUTER bun prepends `BUN_NODE_DIR` to `PATH` and the INNER bun is
+            // execve'd with `argv[0] = <BUN_NODE_DIR>/bun` — exactly the shim
+            // we're about to (re)write. Using that as the symlink target
+            // produces `<BUN_NODE_DIR>/bun -> <BUN_NODE_DIR>/bun` (self-loop),
+            // and the next `/usr/bin/env node` bails with ELOOP "Too many
+            // levels of symbolic links" (#30711). `self_exe_path()` readlinks
+            // `/proc/self/exe` (Linux) / canonicalizes `_NSGetExecutablePath`
+            // (macOS), so it always resolves to the REAL bun regardless of
+            // how the process was invoked. It's memoized via `Once`, so the
+            // cost is paid once per process.
+            let argv0_z: &ZStr = if !optional_bun_path.is_empty() {
+                // When the caller pre-supplied a path, that path is the symlink
+                // target.
+                // SAFETY: callers pass a slice borrowed from a `ZStr` (argv[0] /
+                // self_exe_path / static literal), so `ptr[len] == 0` holds.
+                unsafe { ZStr::from_raw(optional_bun_path.as_ptr(), optional_bun_path.len()) }
+            } else {
+                // Ask the OS for the real absolute path first. Fall back to an
+                // absolute `argv[0]` only if that fails — never trust a bare
+                // `argv[0]` as the target here, because on nested `--bun` the
+                // inner process's `argv[0]` IS `<BUN_NODE_DIR>/bun`.
+                match bun_core::self_exe_path() {
+                    Ok(self_path) if !self_path.as_bytes().is_empty() => {
+                        *optional_bun_path = self_path.as_bytes();
+                        self_path
+                    }
+                    result => {
+                        let argv0_bytes = argv0.as_bytes();
+                        if argv0_bytes.starts_with(Self::BUN_NODE_DIR.as_bytes()) {
+                            // `self_exe_path()` failed and `argv[0]` is the shim
+                            // under `BUN_NODE_DIR` (nested `--bun`). Using it as
+                            // the target would recreate the #30711 self-loop; the
+                            // OUTER bun already planted working shims and PATH, so
+                            // leave them untouched.
+                            return Ok(());
+                        }
+                        if argv0_bytes.first() == Some(&b'/') {
+                            *optional_bun_path = argv0_bytes;
+                            argv0
+                        } else {
+                            // No usable target — propagate the OS error when we
+                            // have one, otherwise leave PATH unmodified.
+                            return match result {
+                                Err(e) => Err(e.into()),
+                                Ok(_) => Ok(()),
+                            };
+                        }
+                    }
+                }
+            };
+
+            #[cfg(bun_debug)]
+            {
+                // Debug-only cleanup; failures are ignored. The EEXIST branch
+                // below already handles a stale dir.
+                let _ = bun_sys::delete_tree_absolute(Self::BUN_NODE_DIR.as_bytes());
+            }
+
+            const NODE_LINK: &ZStr = {
+                const B: &[u8] = concatcp!(RunCommand::BUN_NODE_DIR, "/node\0").as_bytes();
+                // SAFETY: literal ends in NUL; len excludes it.
+                ZStr::from_static(B)
+            };
+            const BUN_LINK: &ZStr = {
+                const B: &[u8] = concatcp!(RunCommand::BUN_NODE_DIR, "/bun\0").as_bytes();
+                // SAFETY: literal ends in NUL; len excludes it.
+                ZStr::from_static(B)
+            };
+            const DIR_Z: &ZStr = {
+                const B: &[u8] = concatcp!(RunCommand::BUN_NODE_DIR, "\0").as_bytes();
+                // SAFETY: literal ends in NUL; len excludes it.
+                ZStr::from_static(B)
+            };
+
+            // Don't trust attacker-created entries in a shared temp dir
+            // (`BUN_NODE_DIR` lives under e.g. `/tmp`). Create it `0700`; if it
+            // already exists, refuse to use it unless it's a directory we own
+            // with no group/other write bits.
+            match bun_sys::mkdir(DIR_Z, 0o700) {
+                Ok(()) => {}
+                Err(e) if e.get_errno() == bun_sys::E::EEXIST => match bun_sys::lstat(DIR_Z) {
+                    Ok(st)
+                        if bun_sys::kind_from_mode(st.st_mode as bun_sys::Mode)
+                            == bun_sys::FileKind::Directory
+                            && st.st_uid == bun_sys::c::getuid()
+                            && (st.st_mode as bun_sys::Mode) & 0o022 == 0 => {}
+                    _ => return Ok(()),
+                },
+                Err(_) => return Ok(()),
+            }
+
+            for dest in [NODE_LINK, BUN_LINK] {
+                let mut replaced = false;
+                loop {
+                    match bun_sys::symlink(argv0_z, dest) {
+                        Ok(()) => break,
+                        Err(e) if e.get_errno() == bun_sys::E::EEXIST => {
+                            // The dir is keyed only on GIT_SHA_SHORT, so two
+                            // different binaries built at the same commit (e.g.
+                            // side-by-side local builds being benchmarked)
+                            // collide here. Blindly reusing the existing link
+                            // would make every `--bun` child of the SECOND
+                            // binary silently exec the FIRST. Verify the target
+                            // before reusing; replace it once if stale.
+                            let mut buf = bun_paths::path_buffer_pool::get();
+                            let matches = bun_sys::readlink(dest, &mut buf)
+                                .map(|n| &buf[..n] == argv0_z.as_bytes())
+                                .unwrap_or(false);
+                            if matches || replaced {
+                                break;
+                            }
+                            let _ = bun_sys::unlink(dest);
+                            replaced = true;
+                        }
+                        Err(_) => return Ok(()),
+                    }
+                }
+            }
+
+            if !path.is_empty() && *path.last().unwrap() != bun_paths::DELIMITER {
+                path.push(bun_paths::DELIMITER);
+            }
+
+            // The reason for the extra delim is because we are going to append the system PATH
+            // later on. this is done by the caller, and explains why we are adding bun_node_dir
+            // to the end of the path slice rather than the start.
+            path.extend_from_slice(Self::BUN_NODE_DIR.as_bytes());
+            path.push(bun_paths::DELIMITER);
+            Ok(())
+        }
+
+        #[cfg(windows)]
+        {
+            use bun_core::strings;
+            use bun_sys::windows as win;
+
+            let mut target_path_buffer = bun_paths::w_path_buffer_pool::get();
+            let prefix: &[u16] = strings::w!("\\??\\");
+
+            // SAFETY: GetTempPathW writes at most `nBufferLength` WCHARs (incl.
+            // trailing NUL) into the offset slice; we reserve `prefix.len()` at
+            // the front for the NT object prefix.
+            let len = unsafe {
+                win::GetTempPathW(
+                    (target_path_buffer.len() - prefix.len()) as u32,
+                    target_path_buffer.as_mut_ptr().add(prefix.len()),
+                )
+            } as usize;
+            if len == 0 {
+                // Non-fatal; fall through and leave
+                // PATH unmodified. (No `RUN` scope is declared in this crate.)
+                return Ok(());
+            }
+
+            target_path_buffer[..prefix.len()].copy_from_slice(prefix);
+
+            // The dir name is ASCII-only, so widen the const `&str` byte-by-
+            // byte into a small stack buffer at runtime (Rust macros require a
+            // single string *literal* token, which `concatcp!` doesn't yield).
+            let dir_name_str: &str = if bun_core::env::IS_DEBUG {
+                "bun-node-debug"
+            } else if bun_core::env::GIT_SHA_SHORT.is_empty() {
+                "bun-node"
+            } else {
+                const_format::concatcp!("bun-node-", bun_core::env::GIT_SHA_SHORT)
+            };
+            let mut dir_name_buf = [0u16; 64];
+            for (i, b) in dir_name_str.bytes().enumerate() {
+                debug_assert!(b < 0x80, "dir_name is ASCII-only");
+                dir_name_buf[i] = b as u16;
+            }
+            let dir_name: &[u16] = &dir_name_buf[..dir_name_str.len()];
+            target_path_buffer[prefix.len() + len..][..dir_name.len()].copy_from_slice(dir_name);
+            let dir_slice_len = prefix.len() + len + dir_name.len();
+
+            #[cfg(bun_debug)]
+            {
+                // Debug builds wipe and recreate the bun-node temp dir so the
+                // ALREADY_EXISTS short-circuit below never reuses a stale
+                // hardlink at a previous debug binary.
+                //
+                // The wipe does not always leave the path absent:
+                // `bun-run.test.ts` uses
+                // `describe.concurrent`, so multiple debug processes race on
+                // this shared dir and `make_dir` can legitimately observe
+                // `PathAlreadyExists` after a sibling re-created it. Swallow
+                // the error — the `CreateHardLinkW` retry below already
+                // re-mkdirs on failure, so a lost race here is harmless.
+                let dir_slice_u8 = bun_core::strings::to_utf8_alloc_with_type(
+                    &target_path_buffer[..dir_slice_len],
+                );
+                let _ = bun_sys::delete_tree_absolute(&dir_slice_u8);
+                let _ = bun_sys::Dir::cwd().make_dir(&dir_slice_u8);
+            }
+
+            let image_path = win::exe_path_w();
+            for name in [strings::w!("\\node.exe\0"), strings::w!("\\bun.exe\0")] {
+                target_path_buffer[dir_slice_len..][..name.len()].copy_from_slice(name);
+                // `target_path_buffer` is mutated in place between FFI calls
+                // (the dir-NUL/backslash toggle below).
+                // Under Stacked Borrows a `*const` derived via `Deref::deref`
+                // is invalidated by the intervening `&mut` from `IndexMut`, so
+                // re-derive `as_ptr()` at each FFI call site instead of caching.
+                if win::CreateHardLinkW(target_path_buffer.as_ptr(), image_path.as_ptr(), None) == 0
+                {
+                    match win::Win32Error::get() {
+                        win::Win32Error::ALREADY_EXISTS => {}
+                        _ => {
+                            target_path_buffer[dir_slice_len] = 0;
+                            // SAFETY: `dir_slice_len` is in-bounds; the byte at
+                            // `dir_slice_len` was just set to NUL.
+                            let dir_w =
+                                bun_core::WStr::from_buf(&target_path_buffer[..], dir_slice_len);
+                            let _ = bun_sys::mkdir_w(dir_w);
+                            target_path_buffer[dir_slice_len] = b'\\' as u16;
+
+                            if win::CreateHardLinkW(
+                                target_path_buffer.as_ptr(),
+                                image_path.as_ptr(),
+                                None,
+                            ) == 0
+                            {
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !path.is_empty() && *path.last().unwrap() != bun_paths::DELIMITER {
+                path.push(bun_paths::DELIMITER);
+            }
+
+            // The reason for the extra delim is because we are going to append the system PATH
+            // later on. this is done by the caller, and explains why we are adding bun_node_dir
+            // to the end of the path slice rather than the start.
+            strings::to_utf8_append_to_list(path, &target_path_buffer[prefix.len()..dir_slice_len]);
+            path.push(bun_paths::DELIMITER);
+            let _ = optional_bun_path;
+            Ok(())
+        }
     }
 
     /// Prepends workspace
@@ -2113,56 +2364,6 @@ impl RunCommand {
             return b"bun";
         }
         paths::basename(str)
-    }
-
-    /// On Windows this first probes for
-    /// a sibling `.bunx` shim and direct-launches it via `BunXFastPath` to
-    /// skip the wrapper exe; otherwise (or if the fast path declines) it falls
-    /// through to `run_binary_without_bunx_path`.
-    ///
-    /// This function only returns if an error starting the process is
-    /// encountered; most other errors are handled by printing and exiting.
-    pub(crate) fn run_binary(
-        ctx: &mut ContextData,
-        executable: &[u8],
-        executable_z: &ZStr,
-        cwd: &[u8],
-        env: &mut DotEnv::Loader,
-        passthrough: &[Box<[u8]>],
-        original_script_for_bun_run: Option<&[u8]>,
-    ) -> crate::Result<::core::convert::Infallible> {
-        // Attempt to find a ".bunx" file on disk, and run it, skipping the
-        // wrapper exe.  we build the full exe path even though we could do
-        // a relative lookup, because in the case we do find it, we have to
-        // generate this full path anyways.
-        #[cfg(windows)]
-        if bun_core::FeatureFlags::WINDOWS_BUNX_FAST_PATH && executable.ends_with(b".exe") {
-            debug_assert!(paths::is_absolute(executable));
-
-            // SAFETY: `DIRECT_LAUNCH_BUFFER` is a process-lifetime static used
-            // single-threaded from CLI dispatch. The returned slice points into
-            // it; we keep the borrow scoped until `try_launch` consumes it.
-            let buf = unsafe { &mut *bunx_fast_path_buffers::DIRECT_LAUNCH_BUFFER.get() };
-            let w = strings::to_nt_path(buf, executable);
-            let w_len = w.len();
-            debug_assert!(w_len > sys::windows::NT_OBJECT_PREFIX.len() + b".exe".len());
-            let new_len = w_len + b".bunx".len() - b".exe".len();
-            let bunx = bun_core::w!("bunx");
-            buf[new_len - bunx.len()..new_len].copy_from_slice(bunx);
-            buf[new_len] = 0;
-
-            BunXFastPath::try_launch(ctx, new_len, env, passthrough);
-        }
-
-        Self::run_binary_without_bunx_path(
-            ctx,
-            executable,
-            executable_z,
-            cwd,
-            env,
-            passthrough,
-            original_script_for_bun_run,
-        )
     }
 
     fn run_binary_generic_error(executable: &[u8], silent: bool, err: &sys::Error) -> ! {
@@ -2702,43 +2903,6 @@ impl RunCommand {
             }
         }
 
-        // ── Windows .bunx fast-path ──────────────────────────────────────────
-        // With `--check` the way below is taken, on which the project is checked.
-        #[cfg(windows)]
-        if bun_core::FeatureFlags::WINDOWS_BUNX_FAST_PATH && !ctx.runtime_options.check {
-            // SAFETY: process-lifetime static, single-threaded CLI dispatch.
-            let buf = unsafe { &mut *bunx_fast_path_buffers::DIRECT_LAUNCH_BUFFER.get() };
-            // NT object-manager prefix (`\??\`), NOT the Win32 long-path
-            // `\\?\` — `try_launch` hands this to NtCreateFile.
-            let root = bun_core::w!("\\??\\");
-            buf[..root.len()].copy_from_slice(root);
-            let cwd_len = unsafe {
-                sys::windows::kernel32::GetCurrentDirectoryW(
-                    (buf.len() - 4) as u32,
-                    buf.as_mut_ptr().add(root.len()),
-                )
-            } as usize;
-            'try_bunx_file: {
-                if cwd_len == 0 {
-                    break 'try_bunx_file;
-                }
-                let mut ptr = root.len() + cwd_len;
-                let prefix = bun_core::w!("\\node_modules\\.bin\\");
-                buf[ptr..ptr + prefix.len()].copy_from_slice(prefix);
-                ptr += prefix.len();
-                let encoded =
-                    strings::convert_utf8_to_utf16_in_buffer(&mut buf[ptr..], target_name);
-                ptr += encoded.len();
-                let ext = bun_core::w!(".bunx");
-                buf[ptr..ptr + ext.len()].copy_from_slice(ext);
-                ptr += ext.len();
-                buf[ptr] = 0;
-
-                let passthrough: Vec<Box<[u8]>> = ctx.passthrough.clone();
-                BunXFastPath::try_launch(ctx, ptr, env_loader, &passthrough);
-            }
-        }
-
         // ── node_modules/.bin / system $PATH fallback ───────────────────────
         // Search the prepended `.bin` dirs
         // (PATH minus ORIGINAL_PATH) unless `--bun` was passed, in which case
@@ -2758,7 +2922,7 @@ impl RunCommand {
             }
 
             if !path_for_which.is_empty() {
-                let mut path_buf = bun_paths::path_buffer_pool::get();
+                let mut path_buf = PathBuffer::uninit();
                 if let Some(destination) =
                     which(&mut path_buf, path_for_which, top_level_dir, target_name)
                 {
@@ -2911,7 +3075,7 @@ impl RunCommand {
         // absolute path via `get_fd_path` before booting. The
         // get_fd_path step matters: it resolves symlinks so module-relative
         // resolution sees the real location.
-        let mut script_name_buf = bun_paths::path_buffer_pool::get();
+        let mut script_name_buf = PathBuffer::uninit();
 
         // Build a NUL-terminated path to open (branching for
         // absolute vs. simple-relative vs. `..`/`~`-prefixed).
@@ -2955,7 +3119,7 @@ impl RunCommand {
             target.len()
         } else {
             // `..foo` / `~foo` — resolve against cwd via joinAbsStringBuf.
-            let mut cwd_buf = bun_paths::path_buffer_pool::get();
+            let mut cwd_buf = PathBuffer::uninit();
             let Ok(cwd) = bun_core::getcwd(&mut cwd_buf) else {
                 return false;
             };
@@ -3047,7 +3211,7 @@ impl RunCommand {
         const STDIN_TRIGGER: &[u8] = b"/[stdin]";
 
         let mut entry_point_buf = [0u8; MAX_PATH_BYTES + STDIN_TRIGGER.len()];
-        let mut cwd_buf = bun_paths::path_buffer_pool::get();
+        let mut cwd_buf = PathBuffer::uninit();
         let cwd = bun_core::getcwd_or_exe_dir(&mut cwd_buf);
         let cwd_bytes = cwd.as_bytes();
         let cwd_len = cwd_bytes.len();
@@ -3109,7 +3273,7 @@ impl RunCommand {
         }
 
         let mut entry_point_buf = [0u8; MAX_PATH_BYTES + EVAL_TRIGGER.len()];
-        let mut cwd_buf = bun_paths::path_buffer_pool::get();
+        let mut cwd_buf = PathBuffer::uninit();
         let cwd = bun_core::getcwd_or_exe_dir(&mut cwd_buf);
         let cwd_bytes = cwd.as_bytes();
         let cwd_len = cwd_bytes.len();
@@ -3144,7 +3308,7 @@ impl RunCommand {
         if !ctx.runtime_options.eval.script.is_empty() {
             // synthetic `[eval]` path under cwd
             let mut entry_point_buf = [0u8; MAX_PATH_BYTES + EVAL_TRIGGER.len()];
-            let mut cwd_buf = bun_paths::path_buffer_pool::get();
+            let mut cwd_buf = PathBuffer::uninit();
             let cwd = bun_core::getcwd_or_exe_dir(&mut cwd_buf);
             let cwd_bytes = cwd.as_bytes();
             let cwd_len = cwd_bytes.len();
@@ -3178,7 +3342,7 @@ impl RunCommand {
             // `cwd_buf[cwd_len] = b'/'` (always `/`, NOT the
             // platform separator) and then run the result through
             // `join_abs_string_buf::<Loose>` to collapse `.`/`..`.
-            let mut cwd_buf = bun_paths::path_buffer_pool::get();
+            let mut cwd_buf = PathBuffer::uninit();
             let cwd = bun_core::getcwd_or_exe_dir(&mut cwd_buf);
             let cwd_len = cwd.as_bytes().len();
             cwd_buf[cwd_len] = b'/';
@@ -3264,7 +3428,7 @@ fn escape_for_js_string(input: &[u8]) -> Vec<u8> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ::core::marker::ConstParamTy)]
-pub(crate) enum Filter {
+pub enum Filter {
     Script,
     Bin,
     BunJs,
@@ -3605,7 +3769,7 @@ impl RunCommand {
             Err(err) => {
                 pretty_errorln!("<r><red>error<r>: {}", err);
                 Output::flush();
-                return 1;
+                Global::exit(1);
             }
         };
 
@@ -3632,8 +3796,8 @@ impl RunCommand {
         // `bun ./docs/README.md` from `/home/user` can't find `./img.png`
         // that sits next to README.md. Resolve to an absolute dir first
         // so joinAbsString downstream doesn't double-apply cwd.
-        let mut base_buf = bun_paths::path_buffer_pool::get();
-        let mut cwd_buf = bun_paths::path_buffer_pool::get();
+        let mut base_buf = PathBuffer::uninit();
+        let mut cwd_buf = PathBuffer::uninit();
         let abs_md_path: &[u8] = 'blk: {
             if paths::is_absolute(path) {
                 break 'blk path;
@@ -3677,12 +3841,12 @@ impl RunCommand {
                     "<r><red>error<r>: markdown rendering exceeded the stack — input is too deeply nested",
                 );
                 Output::flush();
-                return 1;
+                Global::exit(1);
             }
             Err(_) | Ok(None) => {
                 pretty_errorln!("<r><red>error<r>: failed to render markdown");
                 Output::flush();
-                return 1;
+                Global::exit(1);
             }
             Ok(Some(r)) => r,
         };
@@ -3697,554 +3861,8 @@ impl RunCommand {
         // silently (q=2 suppresses the error). System tmp cleanup
         // (systemd-tmpfiles, /tmp reboot wipe) eventually removes the
         // bun-md-*.png files, which are small (~100KB each) and rare.
-        0
-    }
-
-    /// Shell-completion entries for `bun run`. Called from
-    /// `cli_body::bun_getcompletes`.
-    pub(crate) fn completions<const FILTER: Filter>(
-        ctx: &mut ContextData,
-        default_completions: Option<&'static [&'static [u8]]>,
-        reject_list: &[&[u8]],
-    ) -> crate::Result<ShellCompletions> {
-        let mut shell_out = ShellCompletions::default();
-        if FILTER != Filter::ScriptExclude {
-            if let Some(defaults) = default_completions {
-                shell_out.commands = std::borrow::Cow::Borrowed(defaults);
-            }
-        }
-
-        let args = ctx.args.clone();
-
-        let Ok(mut this_transpiler) = Transpiler::init(runner_arena(), ctx.log, args, None) else {
-            return Ok(shell_out);
-        };
-        this_transpiler.options.env.behavior = api::DotEnvBehavior::LoadAll;
-        this_transpiler.options.env.prefix = Box::default();
-        // SAFETY: `Transpiler::env` is a non-null process-lifetime `*mut Loader`.
-        unsafe { (*this_transpiler.env).quiet = true };
-
-        this_transpiler.resolver.care_about_bin_folder = true;
-        this_transpiler.resolver.care_about_scripts = true;
-        this_transpiler.resolver.store_fd = true;
-        this_transpiler.configure_linker();
-
-        // SAFETY: `Transpiler::fs` is the non-null process-static singleton.
-        let top_level_dir = unsafe { (*this_transpiler.fs).top_level_dir() };
-        let Some(root_dir_info) = this_transpiler
-            .resolver
-            .read_dir_info(top_level_dir)
-            .ok()
-            .flatten()
-        else {
-            this_transpiler.resolver.care_about_bin_folder = false;
-            this_transpiler.resolver.care_about_scripts = false;
-            return Ok(shell_out);
-        };
-
-        {
-            this_transpiler.env_mut().load_process()?;
-
-            if let Some(node_env) = this_transpiler.env().get(b"NODE_ENV") {
-                if node_env == b"production" {
-                    this_transpiler.options.production = true;
-                }
-            }
-        }
-
-        type ResultList = ArrayHashMap<Box<[u8]>, ()>;
-
-        if let Some(shell) = this_transpiler.env().get(b"SHELL") {
-            shell_out.shell = crate::cli::shell_completions::Shell::from_env(shell);
-        }
-
-        let mut results = ResultList::new();
-        let mut descriptions: Vec<&[u8]> = Vec::new();
-
-        if FILTER != Filter::ScriptExclude {
-            if let Some(defaults) = default_completions {
-                results.ensure_unused_capacity(defaults.len())?;
-                for item in defaults {
-                    let _ = results.get_or_put(Box::from(*item));
-                }
-            }
-        }
-
-        if FILTER == Filter::Bin || FILTER == Filter::All || FILTER == Filter::AllPlusBunJs {
-            // `bin_dirs()` reads process-static storage but its return slice is
-            // tied to `&self`, which would conflict with the `&mut self` borrow
-            // taken by `read_dir_info` inside the loop. Snapshot the `'static`
-            // path slices into a local Vec to detach the borrow.
-            let bin_dirs_snapshot: Vec<&'static [u8]> =
-                this_transpiler.resolver.bin_dirs().to_vec();
-            for bin_path in bin_dirs_snapshot {
-                if let Some(bin_dir) = this_transpiler
-                    .resolver
-                    .read_dir_info(bin_path)
-                    .ok()
-                    .flatten()
-                {
-                    if let Some(entries) = bin_dir.get_entries_const() {
-                        // `.data` iteration must hold `entries_mutex`
-                        // (uncontended on this single-threaded CLI path).
-                        let _entries_lock = bun_resolver::fs::FileSystem::instance()
-                            .fs
-                            .entries_mutex
-                            .lock_guard();
-                        let mut path_buf = bun_paths::path_buffer_pool::get();
-                        let mut iter = entries.data.iter();
-                        let mut has_copied = false;
-                        let mut dir_slice_len: usize = 0;
-                        while let Some(entry) = iter.next() {
-                            // SAFETY: `EntryMap` stores non-null `*mut Entry` values owned by
-                            // the resolver dir-cache for the process lifetime.
-                            let value = unsafe { &**entry.1 };
-                            // SAFETY: `Transpiler::fs` is the non-null process-static
-                            // singleton; the lazy-stat rewrite inside `kind()` is
-                            // serialized on the per-entry mutex.
-                            if unsafe { value.kind(&raw mut (*this_transpiler.fs).fs, true) }
-                                == bun_resolver::fs::EntryKind::File
-                            {
-                                if !has_copied {
-                                    path_buf[..value.dir.len()].copy_from_slice(value.dir);
-                                    dir_slice_len = value.dir.len();
-                                    if !strings::ends_with_char_or_is_zero_length(value.dir, SEP) {
-                                        dir_slice_len = value.dir.len() + 1;
-                                    }
-                                    has_copied = true;
-                                }
-
-                                let base = value.base();
-                                path_buf[dir_slice_len..dir_slice_len + base.len()]
-                                    .copy_from_slice(base);
-                                path_buf[dir_slice_len + base.len()] = 0;
-                                // SAFETY: NUL terminator written above
-                                let slice =
-                                    ZStr::from_buf(&path_buf[..], dir_slice_len + base.len());
-                                if !sys::is_executable_file_path(slice) {
-                                    continue;
-                                }
-                                // we need to dupe because the string may point to a pointer that only exists in the current scope
-                                // SAFETY: `Transpiler::fs` is the non-null process-static singleton.
-                                let Ok(appended) = unsafe { (*this_transpiler.fs).filename_store }
-                                    .append_slice(base)
-                                else {
-                                    continue;
-                                };
-                                let _ = results.get_or_put(Box::from(appended))?;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if FILTER == Filter::AllPlusBunJs || FILTER == Filter::BunJs {
-            if let Some(dir_info) = this_transpiler
-                .resolver
-                .read_dir_info(top_level_dir)
-                .ok()
-                .flatten()
-            {
-                if let Some(entries) = dir_info.get_entries_const() {
-                    // `.data` iteration must hold `entries_mutex`
-                    // (uncontended on this single-threaded CLI path).
-                    let _entries_lock = bun_resolver::fs::FileSystem::instance()
-                        .fs
-                        .entries_mutex
-                        .lock_guard();
-                    let mut iter = entries.data.iter();
-
-                    while let Some(entry) = iter.next() {
-                        // SAFETY: `EntryMap` stores non-null `*mut Entry` values owned by the
-                        // resolver dir-cache for the process lifetime.
-                        let value = unsafe { &**entry.1 };
-                        let name = value.base();
-                        if name[0] != b'.'
-                            && this_transpiler
-                                .options
-                                .loader(paths::extension(name))
-                                .can_be_run_by_bun()
-                            && !strings::contains(name, b".config")
-                            && !strings::contains(name, b".d.ts")
-                            && !strings::contains(name, b".d.mts")
-                            && !strings::contains(name, b".d.cts")
-                            // SAFETY: `Transpiler::fs` is the non-null process-static
-                            // singleton; the lazy-stat rewrite inside `kind()` is
-                            // serialized on the per-entry mutex.
-                            && unsafe { value.kind(&raw mut (*this_transpiler.fs).fs, true) }
-                                == bun_resolver::fs::EntryKind::File
-                        {
-                            // SAFETY: `Transpiler::fs` is the non-null process-static singleton.
-                            let Ok(appended) =
-                                unsafe { (*this_transpiler.fs).filename_store }.append_slice(name)
-                            else {
-                                continue;
-                            };
-                            let _ = results.get_or_put(Box::from(appended))?;
-                        }
-                    }
-                }
-            }
-        }
-
-        if FILTER == Filter::ScriptExclude
-            || FILTER == Filter::Script
-            || FILTER == Filter::All
-            || FILTER == Filter::AllPlusBunJs
-            || FILTER == Filter::ScriptAndDescriptions
-        {
-            if let Some(package_json) = root_dir_info.enclosing_package_json {
-                if let Some(scripts) = package_json.scripts.as_deref() {
-                    results.ensure_unused_capacity(scripts.count())?;
-                    if FILTER == Filter::ScriptAndDescriptions {
-                        descriptions.reserve(scripts.count());
-                    }
-
-                    let mut max_description_len: usize = 20;
-                    if let Some(max) = this_transpiler.env().get(b"MAX_DESCRIPTION_LEN") {
-                        if let Ok(max_len) = bun_core::fmt::parse_int::<usize>(max, 10) {
-                            max_description_len = max_len;
-                        }
-                    }
-
-                    let keys = scripts.keys();
-                    let mut key_i: usize = 0;
-                    'loop_: while key_i < keys.len() {
-                        let key: &[u8] = &keys[key_i];
-                        key_i += 1;
-
-                        if FILTER == Filter::ScriptExclude {
-                            for default in reject_list {
-                                if *default == key {
-                                    continue 'loop_;
-                                }
-                            }
-                        }
-
-                        // npm-style lifecycle hooks: a script named `pre<X>` or `post<X>` runs
-                        // automatically around `<X>`, so there's no reason to list it as a
-                        // completion target. But `prettier`, `prebuild`-with-no-`build`,
-                        // `postgres`, etc. are standalone scripts — keep them.
-                        if key.starts_with(b"pre") {
-                            if scripts.contains(&key[b"pre".len()..]) {
-                                continue 'loop_;
-                            }
-                        } else if key.starts_with(b"post") {
-                            if scripts.contains(&key[b"post".len()..]) {
-                                continue 'loop_;
-                            }
-                        }
-
-                        // Capacity reserved by `ensure_unused_capacity`
-                        // above; `assume_capacity` skips the grow check and
-                        // avoids a redundant alloc when the key is a duplicate.
-                        let entry_item = results.get_or_put_assume_capacity(Box::from(key));
-
-                        if FILTER == Filter::ScriptAndDescriptions && max_description_len > 0 {
-                            let mut description: &[u8] = *scripts.get(key).unwrap();
-
-                            // When the command starts with something like
-                            // NODE_OPTIONS='--max-heap-size foo' bar
-                            // ^--------------------------------^ trim that
-                            // that way, you can see the real command that's being run
-                            if !description.is_empty() {
-                                'trimmer: {
-                                    if !description.is_empty()
-                                        && description.starts_with(b"NODE_OPTIONS=")
-                                    {
-                                        if let Some(i) = strings::index_of_char(description, b'=') {
-                                            let i = i as usize;
-                                            let delimiter: u8 = if description.len() > i + 1 {
-                                                match description[i + 1] {
-                                                    b'\'' => b'\'',
-                                                    b'"' => b'"',
-                                                    _ => b' ',
-                                                }
-                                            } else {
-                                                break 'trimmer;
-                                            };
-
-                                            let delimiter_offset: usize =
-                                                if delimiter == b' ' { 1 } else { 2 };
-                                            if description.len() > delimiter_offset + i {
-                                                if let Some(j) = strings::index_of_char(
-                                                    &description[delimiter_offset + i..],
-                                                    delimiter,
-                                                ) {
-                                                    let j = j as usize;
-                                                    description = strings::trim(
-                                                        &description[delimiter_offset + i..]
-                                                            [j + 1..],
-                                                        b" ",
-                                                    );
-                                                } else {
-                                                    break 'trimmer;
-                                                }
-                                            } else {
-                                                break 'trimmer;
-                                            }
-                                        } else {
-                                            break 'trimmer;
-                                        }
-                                    }
-                                }
-
-                                if description.len() > max_description_len {
-                                    description = &description[..max_description_len];
-                                }
-                            }
-
-                            descriptions.insert(entry_item.index, description);
-                        }
-                    }
-                }
-            }
-        }
-
-        this_transpiler.resolver.care_about_bin_folder = false;
-        this_transpiler.resolver.care_about_scripts = false;
-
-        // `ShellCompletions` stores `&'static [&'static [u8]]`; the
-        // keys interned into `filename_store` / boxed from static tables outlive
-        // the process. The owning `results` ArrayHashMap is held in a process-
-        // lifetime arena slot so the borrowed keys remain valid.
-        let mut all_keys: Vec<&'static [u8]> = results
-            .keys()
-            .iter()
-            .map(|k| -> &'static [u8] {
-                // SAFETY: every key is a freshly-boxed `Box<[u8]>` owned by
-                // `results`. The owning `ArrayHashMap` is parked in the
-                // process-lifetime `runner_arena()` below and `bun_alloc::Arena`
-                // never runs `Drop`, so the boxed bytes live until process
-                // exit and erasing to `'static` is sound.
-                unsafe { ::core::slice::from_raw_parts(k.as_ptr(), k.len()) }
-            })
-            .collect();
-        strings::sort_asc(&mut all_keys);
-        // Park the owning maps in the runner arena (process-lifetime) so the
-        // `'static` slices above remain valid without leaking/forgetting.
-        let parked = runner_arena().alloc(results);
-        bun_core::asan::register_root_region(
-            std::ptr::from_ref::<ResultList>(parked).cast(),
-            ::core::mem::size_of::<ResultList>(),
-        );
-        shell_out.commands = std::borrow::Cow::Borrowed(runner_arena().alloc_slice_copy(&all_keys));
-        shell_out.descriptions = std::borrow::Cow::Borrowed(runner_arena().alloc_slice_copy(
-            // SAFETY: descriptions borrow into the package.json source buffer
-            // (process-lifetime); erase to `'static`.
-            unsafe {
-                ::core::slice::from_raw_parts(
-                    descriptions.as_ptr().cast::<&'static [u8]>(),
-                    descriptions.len(),
-                )
-            },
-        ));
-
-        Ok(shell_out)
+        Global::exit(0);
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Windows `.bunx` fast-path: skip the wrapper exe by reading the shim metadata
-// directly and either spawning the target binary or booting Bun in-process.
-// ─────────────────────────────────────────────────────────────────────────────
-
-bun_core::declare_scope!(BUNX_FAST_PATH_LOG, visible);
-
-#[cfg(windows)]
-pub(crate) enum BunXFastPath {}
-
-#[cfg(windows)]
-mod bunx_fast_path_buffers {
-    use super::*;
-    // PORTING.md §Global mutable state: Windows-only single-thread CLI scratch
-    // buffers (bunx fast-path runs once on the main thread) → RacyCell.
-    pub(super) static DIRECT_LAUNCH_BUFFER: bun_core::RacyCell<WPathBuffer> =
-        bun_core::RacyCell::new(WPathBuffer::ZEROED);
-}
-
-#[cfg(windows)]
-impl BunXFastPath {
-    /// Convert a
-    /// UTF-8 argument to UTF-16, applying Windows command-line quoting/escaping
-    /// per the canonical "Everyone quotes command line arguments the wrong way"
-    /// rules. Writes into `buffer` and returns the number of u16s written.
-    fn append_windows_argument(buffer: &mut [u16], arg: &[u8]) -> usize {
-        let mut wbuf = [0u16; bun_paths::MAX_WPATH];
-        let warg = strings::convert_utf8_to_utf16_in_buffer(&mut wbuf, arg);
-
-        if warg.is_empty() {
-            // Empty argument needs quotes.
-            buffer[0] = b'"' as u16;
-            buffer[1] = b'"' as u16;
-            return 2;
-        }
-
-        // Trigger quoting only on
-        // space/tab/quote — compare the FULL u16, not the truncated low byte.
-        let needs_quote = strings::index_of_any16(warg, bun_core::w!(" \t\"")).is_some();
-
-        if !needs_quote {
-            buffer[..warg.len()].copy_from_slice(warg);
-            return warg.len();
-        }
-
-        // Fast path: no embedded `"`/`\` → simple wrap.
-        let has_quote_or_backslash = strings::index_of_any16(warg, bun_core::w!("\"\\")).is_some();
-        if !has_quote_or_backslash {
-            buffer[0] = b'"' as u16;
-            buffer[1..1 + warg.len()].copy_from_slice(warg);
-            buffer[warg.len() + 1] = b'"' as u16;
-            return warg.len() + 2;
-        }
-
-        // Complex case: libuv reverse-walk backslash escaping.
-        let mut pos: usize = 0;
-        buffer[pos] = b'"' as u16;
-        pos += 1;
-        let start = pos;
-
-        // Walk the wide string in reverse, emitting escapes for `"` and
-        // backslash runs that precede a `"` (the closing quote we add last).
-        let mut quote_hit = true;
-        let mut i = warg.len();
-        while i > 0 {
-            i -= 1;
-            let c = warg[i];
-            buffer[pos] = c;
-            pos += 1;
-            if quote_hit && c == b'\\' as u16 {
-                buffer[pos] = b'\\' as u16;
-                pos += 1;
-            } else if c == b'"' as u16 {
-                quote_hit = true;
-                buffer[pos] = b'\\' as u16;
-                pos += 1;
-            } else {
-                quote_hit = false;
-            }
-        }
-
-        // Reverse the content we just wrote (between opening quote and current position)
-        buffer[start..pos].reverse();
-
-        // Add closing quote
-        buffer[pos] = b'"' as u16;
-        pos += 1;
-
-        pos
-    }
-
-    /// If this returns, it implies the fast path cannot be taken.
-    pub(crate) fn try_launch(
-        ctx: &mut ContextData,
-        path_len: usize,
-        env: &mut DotEnv::Loader,
-        passthrough: &[Box<[u8]>],
-    ) {
-        if !bun_core::FeatureFlags::WINDOWS_BUNX_FAST_PATH {
-            return;
-        }
-
-        // SAFETY: process-lifetime static, single-threaded CLI dispatch.
-        let direct_launch_buffer =
-            unsafe { &mut *bunx_fast_path_buffers::DIRECT_LAUNCH_BUFFER.get() };
-        let (path_to_use, command_line) = direct_launch_buffer.split_at_mut(path_len);
-
-        bun_core::scoped_log!(
-            BUNX_FAST_PATH_LOG,
-            "Attempting to find and load bunx file: '{}'",
-            bun_core::fmt::utf16(path_to_use)
-        );
-        debug_assert!(paths::is_absolute_windows_wtf16(path_to_use));
-
-        let handle = match sys::open_file_at_windows(
-            Fd::INVALID, // absolute path is given
-            path_to_use,
-            sys::NtCreateFileOptions {
-                access_mask: sys::windows::STANDARD_RIGHTS_READ
-                    | sys::windows::FILE_READ_DATA
-                    | sys::windows::FILE_READ_ATTRIBUTES
-                    | sys::windows::FILE_READ_EA
-                    | sys::windows::SYNCHRONIZE,
-                disposition: sys::windows::FILE_OPEN,
-                options: sys::windows::FILE_NON_DIRECTORY_FILE
-                    | sys::windows::FILE_SYNCHRONOUS_IO_NONALERT,
-                ..Default::default()
-            },
-        ) {
-            Ok(fd) => fd.native(),
-            Err(err) => {
-                bun_core::scoped_log!(BUNX_FAST_PATH_LOG, "Failed to open bunx file: '{}'", err);
-                return;
-            }
-        };
-
-        let mut i: usize = 0;
-        for arg in passthrough {
-            // Add space separator before each argument
-            command_line[i] = b' ' as u16;
-            i += 1;
-            i += Self::append_windows_argument(&mut command_line[i..], arg);
-        }
-        // `direct_launch_callback` →
-        // `Run::boot` reads `vm.argv = ctx.passthrough`, so the assignment must
-        // happen before the shim may call back. Current callers pass a clone of
-        // `ctx.passthrough` so this is a write-back of identical data, but the
-        // contract is that *this* `passthrough` wins.
-        ctx.passthrough = passthrough.to_vec();
-
-        let env_block = env.map.write_windows_env_block();
-
-        let run_ctx = bun_install::windows_shim::bun_shim_impl::FromBunRunContext {
-            handle,
-            base_path: path_to_use[4..].as_mut_ptr(),
-            base_path_len: path_to_use.len() - 4,
-            arguments: command_line.as_mut_ptr(),
-            arguments_len: i,
-            force_use_bun: ctx.debug.run_in_bun,
-            direct_launch_with_bun_js: Self::direct_launch_callback,
-            cli_context: ::core::ptr::from_mut(ctx),
-            environment: Some(env_block.as_ptr()),
-        };
-
-        bun_core::scoped_log!(
-            BUNX_FAST_PATH_LOG,
-            "run_ctx.force_use_bun: '{}'",
-            run_ctx.force_use_bun
-        );
-
-        bun_install::windows_shim::bun_shim_impl::try_startup_from_bun_js(run_ctx);
-
-        bun_core::scoped_log!(BUNX_FAST_PATH_LOG, "did not start via shim");
-    }
-
-    fn direct_launch_callback(wpath: &mut [u16], ctx: bun_options_types::context::Context<'_>) {
-        // SAFETY: process-lifetime static, single-threaded CLI dispatch.
-        // `try_launch` (still on the call stack) holds live `&mut [u16]`
-        // reborrows (`path_to_use`/`command_line`) and raw pointers
-        // (`run_ctx.base_path`/`arguments`) into this same UnsafeCell.
-        // Materialising a fresh `&mut WPathBuffer` here would push a Unique
-        // tag over the whole buffer and pop those tags under Stacked Borrows.
-        // Derive the byte slice directly from the raw `*mut WPathBuffer` so no
-        // intermediate `&mut` retag covers the caller's borrows.
-        // WPathBuffer is `#[repr(transparent)] [u16; PATH_MAX_WIDE]` —
-        // reinterpret as `[u8; 2N]` for the UTF-16→UTF-8 transcoder's output.
-        let out_buf = unsafe {
-            let raw = bunx_fast_path_buffers::DIRECT_LAUNCH_BUFFER.get();
-            ::core::slice::from_raw_parts_mut(raw.cast::<u8>(), bun_paths::PATH_MAX_WIDE * 2)
-        };
-        let utf8 = strings::convert_utf16_to_utf8_in_buffer(out_buf, wpath);
-        if let Err(err) = RunCommand::boot(ctx, utf8.to_vec().into_boxed_slice(), None) {
-            // SAFETY: `ctx.log` was set in `create_context_data`.
-            let _ = unsafe { &mut *ctx.log }.print(std::ptr::from_mut(Output::error_writer()));
-            Output::err(
-                err,
-                "Failed to run bin \"<b>{}<r>\"",
-                (bstr::BStr::new(paths::basename(utf8)),),
-            );
-            Global::exit(1);
-        }
-    }
-}

@@ -10,13 +10,12 @@ namespace Bun {
 
 bool IsolatedModuleCache::canUse(JSC::VM&, void* bunVM, const BunString* typeAttribute)
 {
-    if (!isBunTest)
-        return false;
-    if (!Bun__VM__useIsolationSourceProviderCache(bunVM))
-        return false;
-    if (typeAttribute && !typeAttribute->isEmpty())
-        return false;
-    return true;
+    // The cache only ever engaged under `bun test` (`isBunTest`, whose only
+    // writer was the test runner). With that gone nothing can insert into it,
+    // so `canUse` is unconditionally false and lookup/insert are dead weight.
+    UNUSED_VARIABLE(bunVM);
+    UNUSED_VARIABLE(typeAttribute);
+    return false;
 }
 
 Zig::SourceProvider* IsolatedModuleCache::lookup(JSC::VM& vm, const WTF::String& key)

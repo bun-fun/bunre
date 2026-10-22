@@ -44,9 +44,21 @@ use bun_resolver::fs as Fs;
 use bun_resolver::node_fallbacks;
 use bun_resolver::{GlobalCache, ResultUnion as ResolveResultUnion};
 
-use crate::cli::upgrade_command::FileSystemTmpdirExt as _;
 use crate::timer;
 use crate::webcore::blob::BlobExt as _;
+
+// `bun_resolver::fs::FileSystem` (the inline canonical type surface
+// in `resolver/lib.rs`) does not expose `tmpdir()`; the full impl lives in
+// the un-exported `fs_full` module. Shim it here — open `RealFS::tmpdir_path()`
+// as a `sys::Dir`, mirroring `RealFS::open_tmp_dir`.
+pub(crate) trait FileSystemTmpdirExt {
+    fn tmpdir(&mut self) -> crate::Result<bun_sys::Dir>;
+}
+impl FileSystemTmpdirExt for Fs::FileSystem {
+    fn tmpdir(&mut self) -> crate::Result<bun_sys::Dir> {
+        bun_sys::Dir::open(Fs::RealFS::tmpdir_path()).map_err(Into::into)
+    }
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Per-VM runtime state
@@ -96,9 +108,7 @@ pub(crate) struct RuntimeState {
     /// has not been proven safe; keep the prior behavior of leaking any
     /// still-occupied slot while still freeing the pool allocation itself.
     pub(crate) body_value_pool: Box<core::mem::ManuallyDrop<crate::webcore::body::HiveAllocator>>,
-    /// The resolver's PackageManager wake-handler context (module queue + VM
-    /// handle); the resolver holds a raw pointer to it. Freed with the state.
-    pub(crate) wake_ctx: Option<Box<bun_jsc::async_module::WakeContext>>,
+    pub(crate) active_handles: ActiveHandles,
     /// In-process `Bun.cron()` jobs that `--hot` reload / worker teardown must
     /// stop; one ref per entry, released by `CronJob::remove_from_list` /
     /// `clear_all_for_vm`.
@@ -376,7 +386,7 @@ unsafe fn init_runtime_state(
                 )
             }
         },
-        wake_ctx: None,
+        active_handles: ActiveHandles::default(),
         cron_jobs: Vec::new(),
         lint: core::cell::OnceCell::new(),
         // SAFETY: `vm` is the live VM being initialized. `VirtualMachine::init`
@@ -464,19 +474,6 @@ unsafe fn init_runtime_state(
                     // from CLI args to the resolver so symlinked node_modules
                     // entries resolve via their link path (peer deps stay reachable).
                     t.resolver.opts.preserve_symlinks = preserve_symlinks;
-                    let wake_ctx: &mut bun_jsc::async_module::WakeContext = &mut **(*state)
-                        .wake_ctx
-                        .insert(Box::new(bun_jsc::async_module::WakeContext {
-                            queue: &raw mut (*vm).modules,
-                            handle: (*vm).handle(),
-                            kind: (*vm).current_loop_kind(),
-                        }));
-                    t.resolver.on_wake_package_manager = bun_resolver::install_types::WakeHandler(
-                        Some(bun_resolver::install_types::WakeTarget {
-                            context: core::ptr::NonNull::from(wake_ctx).cast(),
-                            handler: bun_jsc::async_module::Queue::on_wake_handler,
-                        }),
-                    );
                     // Branch on `opts.graph` here — with a module graph,
                     // auto_jsx=true would
                     // `read_dir_info(cwd)` and cache its tsconfig.json BEFORE
@@ -1030,16 +1027,6 @@ unsafe fn auto_tick(vm: *mut VirtualMachine) {
             || uv_idle_started
             || !unsafe { &*el }.immediate_tasks.is_empty()
             || unsafe { &*el }.has_pending_tasks();
-        // Fold the QUIC deadline into the poll timeout.
-        // SAFETY: `loop_` is the live per-thread uws loop.
-        let quic_next_tick_us = unsafe {
-            let ild = &(*loop_).internal_loop_data;
-            if ild.quic_head.is_null() {
-                None
-            } else {
-                Some(ild.quic_next_tick_us)
-            }
-        };
         let mut timespec = bun_core::Timespec { sec: 0, nsec: 0 };
         // SAFETY: `loop_` is the live per-thread uws loop.
         if unsafe { (*loop_).is_active() } {
@@ -1067,7 +1054,6 @@ unsafe fn auto_tick(vm: *mut VirtualMachine) {
                     &mut (*state).timer,
                     &mut timespec,
                     has_pending_immediate,
-                    quic_next_tick_us,
                     vm.cast(),
                     &mut now,
                 )
@@ -1175,15 +1161,6 @@ unsafe fn auto_tick_active(vm: *mut VirtualMachine) {
             || uv_idle_started
             || !unsafe { &*el }.immediate_tasks.is_empty()
             || unsafe { &*el }.has_pending_tasks();
-        // SAFETY: `loop_` is the live per-thread uws loop.
-        let quic_next_tick_us = unsafe {
-            let ild = &(*loop_).internal_loop_data;
-            if ild.quic_head.is_null() {
-                None
-            } else {
-                Some(ild.quic_next_tick_us)
-            }
-        };
         let mut timespec = bun_core::Timespec { sec: 0, nsec: 0 };
         // SAFETY: `loop_` is the live per-thread uws loop.
         if unsafe { (*loop_).is_active() } {
@@ -1201,7 +1178,6 @@ unsafe fn auto_tick_active(vm: *mut VirtualMachine) {
                     &mut (*state).timer,
                     &mut timespec,
                     has_pending_immediate,
-                    quic_next_tick_us,
                     vm.cast(),
                     &mut now,
                 )
@@ -1531,7 +1507,6 @@ static __BUN_RUNTIME_HOOKS: RuntimeHooks = RuntimeHooks {
     parse_worker_exec_argv_flags,
     stop_cron_for_vm_teardown,
     cron_clear_all_reload,
-    retroactively_report_discovered_tests,
     cancel_timers,
     stop_dns_for_vm_teardown,
     stop_active_handles_for_vm_teardown: stop_active_handles_for_vm_teardown_hook,
@@ -1753,46 +1728,80 @@ fn stop_dns_for_vm_teardown() -> SweepResult {
     result
 }
 
-/// `--isolate` swap: a microtask still pending at end-of-file (queued by
-/// `tick_immediate_tasks` or `handle_rejected_promises`) can register new
-/// handles when it runs, so drain first so they are armed before the sweep,
-/// then stop. (VM teardown must *not* drain here — its
-/// prepareForDestruction discards the pre-exit queues.)
-pub(crate) fn stop_active_handles_for_test_isolation(vm: &mut VirtualMachine) {
-    let _ = vm.event_loop_mut().drain_microtasks();
-    let _ = stop_active_handles(vm, bun_jsc::StopReason::Disposed);
-}
-
 pub(crate) fn stop_active_handles_for_vm_teardown(vm: &mut VirtualMachine) -> SweepResult {
-    stop_active_handles(vm, bun_jsc::StopReason::VmTeardown)
+    stop_active_handles(vm)
 }
 
-/// One stop-phase sweep over what the VM's contexts own: every armed
-/// [`bun_jsc::AbortHandle`] (Node's `HandleWrap` list) is closed natively now,
-/// while the VM is alive, rather than by a GC finalizer during `~VM`.
-fn stop_active_handles(vm: &mut VirtualMachine, reason: bun_jsc::StopReason) -> SweepResult {
-    // Fake-timer state lives in the per-thread `timer::All`, not the JS
-    // global, so a file that leaves it active routes every later file's
-    // `setTimeout` into the never-driven fake heap. Leave the heap itself
-    // intact: `swap_global_for_test_isolation` runs `cancel_all_timeout_objects`
-    // next, which walks both heaps and releases `TimeoutObject` pins and
-    // discards `AbortSignalTimeout` timers at a point where no user JS can
-    // touch the outgoing signals.
-    {
-        let all = timer_all();
-        // SAFETY: single JS thread, no re-entry while we hold the field borrow.
-        if !all.is_null() && unsafe { (*all).fake_timers.is_active() } {
-            let global = vm.global();
-            // SAFETY: as above. Only touches `fake_timers`' clock.
-            unsafe { (*all).fake_timers.reset_for_isolation(global) };
-        }
-        if !all.is_null() {
-            // SAFETY: as above; `disable` borrows only `event_loop_delay` and
-            // reaches the heap through `timer_all()` (disjoint-field access).
-            unsafe { (*all).event_loop_delay.disable() };
+fn stop_active_handles(_vm: &mut VirtualMachine) -> SweepResult {
+    let state = runtime_state();
+    if state.is_null() {
+        return SweepResult::Idle;
+    }
+    let mut result = SweepResult::Idle;
+    // SAFETY: `timer_all()` is the live per-thread `timer::All`; disable
+    // borrows only `event_loop_delay`.
+    unsafe { (*timer_all()).event_loop_delay.disable() };
+    loop {
+        // SAFETY: live boxed per-thread `RuntimeState`; the borrow ends before
+        // the close below re-enters JS.
+        let Some(kv) = (unsafe { &mut (*state).active_handles }).pop() else {
+            break;
+        };
+        result = SweepResult::Stopped;
+        match kv.key {
+            // SAFETY: live until it unregisters in `detach`.
+            ActiveHandle::FsWatcher(w) => unsafe { w.as_ref() }.close_for_isolation(),
+            // Live until it unregisters in `close()` (JS thread, us) — a
+            // registered entry implies `close()` has not run, and `deinit`
+            // cannot fire before `close()` drops the wrapper's Strong ref.
+            ActiveHandle::StatWatcher(w) => bun_ptr::ParentRef::from(w).close(),
+            ActiveHandle::Server(mut s) => s.stop(true),
+            ActiveHandle::Listener(l) => {
+                // SAFETY: live until it unregisters in `do_stop`/`finalize`.
+                crate::socket::Listener::stop_for_vm_teardown(unsafe { l.as_ref() })
+            }
+            ActiveHandle::UdpSocket(u) => {
+                // SAFETY: live until it unregisters in `on_close`.
+                crate::socket::udp_socket::UDPSocket::stop_for_vm_teardown(unsafe { u.as_ref() })
+            }
+            ActiveHandle::DuplexUpgrade(c) => {
+                // SAFETY: live until it unregisters in `deinit`.
+                let c = unsafe { bun_ptr::ThisPtr::new(c.as_ptr()) };
+                crate::socket::DuplexUpgradeContext::stop_for_vm_teardown(c)
+            }
+            // SAFETY: live until it unregisters when its deinit task runs.
+            #[cfg(windows)]
+            ActiveHandle::WindowsNamedPipe(c) => unsafe {
+                crate::socket::WindowsNamedPipeContext::stop_for_vm_teardown(c.as_ptr())
+            },
+            // SAFETY: live until it unregisters in `deinit`.
+            ActiveHandle::Fetch(t) => unsafe {
+                crate::webcore::fetch::FetchTasklet::stop_for_vm_teardown(t.as_ptr())
+            },
+            // SAFETY: live until they unregister in `on_response`.
+            ActiveHandle::S3Request(t) => unsafe {
+                crate::webcore::s3::simple_request::S3HttpSimpleTask::stop_for_vm_teardown(
+                    t.as_ptr(),
+                )
+            },
+            // SAFETY: as above.
+            ActiveHandle::S3Download(t) => unsafe {
+                crate::webcore::s3::download_stream::S3HttpDownloadStreamingTask::stop_for_vm_teardown(t.as_ptr())
+            },
+            // SAFETY: live until it unregisters in `on_complete_anytask`.
+            ActiveHandle::Bundle(c) => unsafe {
+                crate::api::js_bundle_completion_task::JSBundleCompletionTask::stop_for_vm_teardown(
+                    c.as_ptr(),
+                )
+            },
+            // Live until it unregisters in `destroy_channel`.
+            // SAFETY: registered ⇒ live; may free itself inside, not touched after.
+            ActiveHandle::DnsResolver(r) => unsafe {
+                let _ = crate::dns_jsc::Resolver::close_channel_for_terminate(r.as_ptr());
+            },
         }
     }
-    vm.stop_context_handles(reason)
+    result
 }
 
 /// `TestReporterAgent.retroactivelyReportDiscoveredTests(agent, next_test_id)`.
@@ -1805,111 +1814,20 @@ fn stop_active_handles(vm: &mut VirtualMachine, reason: bun_jsc::StopReason) -> 
 /// # Safety
 /// `agent` is a live C++ `Inspector::TestReporterAgent::Handle*` (just stored
 /// into `debugger.test_reporter_agent.handle` by the caller). Called on the JS
-/// thread.
-unsafe fn retroactively_report_discovered_tests(
-    agent: *mut bun_jsc::debugger::TestReporterHandle,
-    next_test_id: i32,
-) -> i32 {
-    use crate::test_runner::bun_test::{Phase, TestScheduleEntry};
-    use crate::test_runner::jest::Jest;
-    use bun_jsc::debugger::TestType;
-
-    let Some(runner) = Jest::runner() else {
-        return next_test_id;
-    };
-    let Some(active_file) = runner.bun_test_root.active_file.as_ref() else {
-        return next_test_id;
-    };
-    // SAFETY: single-threaded; `active_file` keeps the cell alive for this call.
-    let active_file = unsafe { &mut *active_file.as_ptr() };
-
-    // Only report if we're in collection or execution phase (tests have been
-    // discovered).
-    match active_file.phase {
-        Phase::Collection | Phase::Execution => {}
-        Phase::Done => return next_test_id,
-    }
-
-    // Get the file path for source location info.
-    use crate::test_runner::jest::FileColumns as _;
-    let file_path = runner.files.items_source()[active_file.file_id as usize]
-        .path
-        .text();
-    let source_url = bun_core::String::from_bytes(file_path);
-
-    let mut max_id: i32 = next_test_id;
-
-    // Use an explicit stack because describe() can nest to any depth.
-    let mut open: Vec<(core::slice::IterMut<'_, TestScheduleEntry>, i32)> =
-        vec![(active_file.collection.root_scope.entries.iter_mut(), -1)];
-    while let Some((children, parent_id)) = open.last_mut() {
-        let parent_id = *parent_id;
-        let Some(entry) = children.next() else {
-            open.pop();
-            continue;
-        };
-        match entry {
-            TestScheduleEntry::Describe(describe) => {
-                if describe.base.test_id_for_debugger == 0 {
-                    max_id += 1;
-                    // Assign the ID so start/end events will fire during execution.
-                    describe.base.test_id_for_debugger = max_id;
-                    let name = bun_core::String::from_bytes(
-                        describe.base.name.as_deref().unwrap_or(b"(unnamed)"),
-                    );
-                    // SAFETY: `agent` is a live C++ handle (fn contract).
-                    unsafe { &mut *agent }.report_test_found_with_location(
-                        max_id,
-                        &name,
-                        TestType::Describe,
-                        parent_id,
-                        &source_url,
-                        describe.base.line_no as i32,
-                    );
-                }
-                let describe_id = describe.base.test_id_for_debugger;
-                open.push((describe.entries.iter_mut(), describe_id));
-            }
-            TestScheduleEntry::TestCallback(test_entry) => {
-                if test_entry.base.test_id_for_debugger == 0 {
-                    max_id += 1;
-                    test_entry.base.test_id_for_debugger = max_id;
-                    let name = bun_core::String::from_bytes(
-                        test_entry.base.name.as_deref().unwrap_or(b"(unnamed)"),
-                    );
-                    // SAFETY: `agent` is a live C++ handle (fn contract).
-                    unsafe { &mut *agent }.report_test_found_with_location(
-                        max_id,
-                        &name,
-                        TestType::Test,
-                        parent_id,
-                        &source_url,
-                        test_entry.base.line_no as i32,
-                    );
-                }
-            }
-        }
-    }
-    max_id
-}
-
 // ════════════════════════════════════════════════════════════════════════════
 // ConsoleObject runtime-type hooks
 // ════════════════════════════════════════════════════════════════════════════
-
-/// `Jest.runner.?.bun_test_root.onBeforePrint()` — flush the test reporter's
-/// line state before user `console.log` output interleaves with it.
-fn console_on_before_print() {
-    if let Some(runner) = crate::test_runner::jest::Jest::runner() {
-        runner.bun_test_root.on_before_print();
-    }
-}
 
 use bun_io::AsFmt;
 
 /// `ConsoleObject.Formatter.printAs(.Private, …)` runtime-type chain — see
 /// [`RuntimeHooks::console_print_runtime_object`]. Returns `true` when `value`
 /// matched one of the high-tier types and was fully formatted.
+/// The test reporter used to flush its pending line state here before
+/// console.log interleaved with it. bunre has no test runner, so the hook
+/// the C++ runtime-hooks table still references is a no-op.
+fn console_on_before_print() {}
+
 fn console_print_runtime_object<'a, 'f>(
     formatter: &'a mut bun_jsc::Formatter<'f>,
     writer: &'a mut dyn bun_io::Write,
@@ -1929,7 +1847,6 @@ fn console_print_runtime_object_inner<const C: bool>(
     value: JSValue,
 ) -> JsResult<bool> {
     use crate::api::BuildArtifact;
-    use crate::api::archive::Archive;
     use crate::webcore::{Blob, Request, Response, S3Client};
     use core::fmt::Write as _;
 
@@ -1986,11 +1903,6 @@ fn console_print_runtime_object_inner<const C: bool>(
     if let Some(s3client) = value.as_class_ref::<S3Client>() {
         let mut w = AsFmt::new(writer_);
         let result = s3client.write_format::<_, _, C>(formatter, &mut w);
-        return rethrow_pending(global, result.is_err());
-    }
-    if let Some(archive) = value.as_class_ref::<Archive>() {
-        let mut w = AsFmt::new(writer_);
-        let result = archive.write_format::<_, _, C>(formatter, &mut w);
         return rethrow_pending(global, result.is_err());
     }
     if bun_jsc::FetchHeaders::cast_(value, formatter.global_this.vm()).is_some() {
@@ -2080,18 +1992,6 @@ fn console_print_runtime_object_inner<const C: bool>(
         let _ = resolve_log.msg.write_format::<C>(&mut w);
         return Ok(true);
     }
-    {
-        use crate::test_runner::pretty_format::{JestPrettyFormat, WrappedWriter};
-        // `writer_` is `&mut dyn bun_io::Write`; wrap once more so the
-        // (sized) `&mut dyn bun_io::Write` satisfies `WrappedWriter<W>`'s
-        // `W: bun_io::Write` bound via the blanket `impl Write for &mut W`.
-        let mut sink: &mut dyn bun_io::Write = &mut *writer_;
-        let mut wrapped = WrappedWriter::new(&mut sink);
-        if JestPrettyFormat::print_asymmetric_matcher::<_, _, C>(formatter, &mut wrapped, value)? {
-            return Ok(true);
-        }
-    }
-
     Ok(false)
 }
 
@@ -2104,7 +2004,6 @@ fn to_jsc_fetch_error(err: &crate::Error) -> bun_jsc::CrateError {
         crate::Error::Jsc(e) => *e,
         crate::Error::Bundler(e) => (*e).into(),
         crate::Error::Resolver(e) => (*e).into(),
-        crate::Error::Install(e) => (*e).into(),
         crate::Error::Core(e) => (*e).into(),
         crate::Error::Sys(e) => (*e).into(),
         crate::Error::Alloc(e) => (*e).into(),
@@ -2346,9 +2245,9 @@ fn transpile_source_code_of_any_provenance(
             // arena. Declared after `arena_guard` so it drops before the
             // guard can reset that heap. Small `AstVec`s live in the state's
             // inline chunk, not the arena, so the pending-imports path must
-            // consume this scope via `take_state()` and ship the box with the
+            // no longer shipped anywhere: the scope just drops at fn end.
             // arena.
-            let ast_alloc_scope = bun_alloc::ast_alloc::ScopedAstAlloc::with_spill(arena_heap);
+            let _ast_alloc_scope = bun_alloc::ast_alloc::ScopedAstAlloc::with_spill(arena_heap);
             // ── Watcher package_json lookup ─────────────────────────────────
             let mut package_json: Option<&'static bun_watcher::PackageJSON> = None;
             {
@@ -2393,9 +2292,6 @@ fn transpile_source_code_of_any_provenance(
                 (*jsc_vm).transpiler.log = args.log;
                 (*jsc_vm).transpiler.resolver.log = args_log_nn;
                 (*jsc_vm).transpiler.linker.log = args.log;
-                if let Some(pm) = (*jsc_vm).transpiler.resolver.package_manager {
-                    (*pm.cast::<bun_install::PackageManager>().as_ptr()).log = args.log;
-                }
             }
             let _log_guard = scopeguard::guard(jsc_vm, move |jsc_vm| {
                 // SAFETY: guard runs on the same JS thread before `jsc_vm` is
@@ -2404,9 +2300,6 @@ fn transpile_source_code_of_any_provenance(
                     (*jsc_vm).transpiler.log = old_log;
                     (*jsc_vm).transpiler.resolver.log = old_log_nn;
                     (*jsc_vm).transpiler.linker.log = old_log;
-                    if let Some(pm) = (*jsc_vm).transpiler.resolver.package_manager {
-                        (*pm.cast::<bun_install::PackageManager>().as_ptr()).log = old_log;
-                    }
                 }
             });
 
@@ -2988,47 +2881,11 @@ fn transpile_source_code_of_any_provenance(
                     )?;
                 }
 
-                // Pending imports → AsyncModule queue.
+                // Pending imports mean a bare specifier that was not
+                // resolvable through node_modules. bunre has no
+                // auto-installer to fetch it: fail the load instead.
                 if parse_result.pending_imports.len() > 0 {
-                    // SAFETY: per fn contract — `extra` is live for the call.
-                    let promise_ptr = unsafe { &*extra }.promise_ptr;
-                    if promise_ptr.is_null() {
-                        return Err(crate::Error::UnexpectedPendingResolution);
-                    }
-
-                    if parse_result.source.contents_is_recycled {
-                        // this shared buffer is about to become owned by the AsyncModule struct
-                        // SAFETY: per fn contract — `jsc_vm` is the live per-thread VM.
-                        let fs_cache = unsafe { &mut (*jsc_vm).transpiler.resolver.caches.fs };
-                        let buf = core::ptr::from_mut(fs_cache.shared_buffer()).cast_const();
-                        // `parse_result.source.contents` borrows the detached buffer's bytes;
-                        // ownership moves to the AsyncModule via the arena/parse_result, so the
-                        // swapped-out backing storage must not be freed here.
-                        let _ = core::mem::ManuallyDrop::new(fs_cache.reset_shared_buffer(buf));
-                    }
-
-                    // Hand `arena` ownership to the queue (defuse the give-back guard).
-                    let (_, arena, _, _) = scopeguard::ScopeGuard::into_inner(arena_guard);
-                    // Hand the `AstAlloc` state to the queue too: the queued
-                    // AST's small `AstVec`s live in its inline bump chunk.
-                    let ast_alloc_state = ast_alloc_scope.take_state();
-                    // SAFETY: per fn contract — `jsc_vm` is the live per-thread VM.
-                    unsafe {
-                        (*jsc_vm).modules.enqueue(
-                            global_object,
-                            bun_jsc::async_module::InitOpts {
-                                parse_result,
-                                path: *path,
-                                promise_ptr: Some(promise_ptr),
-                                specifier,
-                                referrer,
-                                arena,
-                                ast_alloc_state,
-                                is_static: is_input_static(jsc_vm, args),
-                            },
-                        );
-                    }
-                    return Err(crate::Error::AsyncModule);
+                    return Err(crate::Error::UnexpectedPendingResolution);
                 }
 
                 let is_commonjs_module = parse_result.ast.has_commonjs_export_names

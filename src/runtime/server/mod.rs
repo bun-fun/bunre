@@ -111,20 +111,12 @@ pub(crate) use request_context::RequestContext as NewRequestContext;
 pub(crate) mod any_request_context;
 pub(crate) use any_request_context::AnyRequestContext;
 
-/// Run `$body` once for each attached multiplexed app (`h3_app`, then
-/// `h2_app`) with `$mux: &mut impl server_config::MuxApp`. A macro rather than
-/// a closure because the two apps are different types.
+/// Run `$body` for the attached HTTP/2 app, if any. bunre has no HTTP/3
+/// stack, so the h2 mux is the only multiplexed app.
 macro_rules! for_each_mux_app {
     ($self:expr, |$mux:ident| $body:block) => {{
         #[allow(unused_imports)]
         use server_config::MuxApp as _;
-        if Self::HAS_H3 {
-            if let Some(app) = $self.h3_app {
-                // S008: `h3::App` is an `opaque_ffi!` ZST — safe deref.
-                let $mux = bun_opaque::opaque_deref_mut(app);
-                $body
-            }
-        }
         if let Some(app) = $self.h2_app {
             // S008: `h2::App` is an `opaque_ffi!` ZST — safe deref.
             let $mux = bun_opaque::opaque_deref_mut(app);
@@ -227,15 +219,11 @@ bun_jsc::impl_abort_handle_owner!(
 pub(crate) struct NewServer<const SSL: bool, const DEBUG: bool> {
     pub(crate) app: Option<*mut uws_sys::NewApp<SSL>>,
     pub(crate) listener: Option<*mut uws_sys::app::ListenSocket<SSL>>,
-    // Never set when !SSL.
-    pub(crate) h3_app: Option<*mut uws_sys::h3::App>,
     /// Attached to `app` when `config.http2`; serves connections that
     /// negotiate "h2" (ALPN) or open with the cleartext preface.
     pub(crate) h2_app: Option<*mut uws_sys::h2::App>,
-    pub(crate) h3_listener: Option<*mut uws_sys::h3::ListenSocket>,
     /// Cached `h3=":<port>"; ma=86400` for Alt-Svc on H1 responses; formatted
     /// once in onH3Listen so renderMetadata doesn't reformat per-request.
-    pub(crate) h3_alt_svc: Box<[u8]>,
     pub(crate) js_value: jsc::JsRef,
     /// Potentially null before listen() is called, and once .destroy() is called.
     // LIFETIMES.tsv = STATIC → `&'static VirtualMachine`. `BackRef` for safe
@@ -342,7 +330,7 @@ impl<const SSL: bool, const DEBUG: bool> Drop for NewServer<SSL, DEBUG> {
             unsafe { &mut *plugins.as_ptr() }
                 .forget_server(AnyServer::from(std::ptr::from_ref::<Self>(self)));
         }
-        // The remaining owned fields (config, base_url, h3_alt_svc,
+        // The remaining owned fields (config, base_url,
         // user_routes, all_closed_promise) drop automatically.
     }
 }
@@ -444,8 +432,6 @@ impl Drop for DetachRequestOnDrop {
 }
 
 impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
-    pub(crate) const HAS_H3: bool = SSL;
-
     // ── raw-field accessors ──────────────────────────────────────────────────
 
     /// `global_this` is a STATIC backref (LIFETIMES.tsv) set in `init()`;
@@ -490,13 +476,6 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
             + self.base_url_string_for_joining.len()
             + self.config.memory_cost()
             + self.dev_server.as_ref().map_or(0, |d| d.memory_cost())
-    }
-
-    pub(crate) fn h3_alt_svc(&self) -> Option<&[u8]> {
-        if !Self::HAS_H3 || self.h3_alt_svc.is_empty() {
-            return None;
-        }
-        Some(&self.h3_alt_svc)
     }
 
     pub(crate) fn on_pending_request(&self) {
@@ -586,13 +565,6 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
                     port = bun_opaque::opaque_deref_mut(listener)
                         .get_local_port()
                         .unwrap_or(port);
-                } else if Self::HAS_H3 {
-                    if let Some(h3l) = self.h3_listener {
-                        // S012: `h3::ListenSocket` is an `opaque_ffi!` ZST — safe deref.
-                        port = bun_opaque::opaque_deref_mut(h3l)
-                            .get_local_port()
-                            .unwrap_or(port);
-                    }
                 }
                 URLFormatter {
                     proto: if SSL { URLProto::Https } else { URLProto::Http },
@@ -629,7 +601,7 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
         }
         // HTTP/3 connections are not counted yet, so a stream on one can still arrive after the drain.
         debug_assert!(
-            self.h3_app.is_some() || self.js_value.is_strong() || self.js_value.try_get().is_none(),
+            self.js_value.is_strong() || self.js_value.try_get().is_none(),
             "a socket outlived the server's connection accounting"
         );
         self.js_value.try_get()
@@ -1658,7 +1630,7 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
     }
 
     pub(crate) fn has_listener(&self) -> bool {
-        self.listener.is_some() || (Self::HAS_H3 && self.h3_listener.is_some())
+        self.listener.is_some()
     }
 
     pub(crate) fn set_flags(
@@ -1716,32 +1688,8 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
             self.abort_handle.leave();
         }
 
-        if Self::HAS_H3 {
-            if let Some(h3l) = self.h3_listener.take() {
-                // Graceful: GOAWAY + drain via the still-open UDP socket; the
-                // engine rejects new conns and the timer keeps in-flight streams
-                // progressing until deinit. Abrupt: close the fd now.
-                if !abrupt {
-                    if let Some(h3a) = self.h3_app {
-                        // S008: `h3::App` is an `opaque_ffi!` ZST — safe deref.
-                        bun_opaque::opaque_deref_mut(h3a).close();
-                    }
-                } else {
-                    // S008: `h3::ListenSocket` is an `opaque_ffi!` ZST — safe deref.
-                    bun_opaque::opaque_deref_mut(h3l).close();
-                }
-            }
-        }
-
         let already_terminated = self.flags.contains(ServerFlags::TERMINATED);
         let Some(listener) = self.listener.take() else {
-            if Self::HAS_H3 && self.h3_app.is_some() {
-                self.unref();
-                self.notify_inspector_server_stopped();
-                if abrupt {
-                    self.flags.insert(ServerFlags::TERMINATED);
-                }
-            }
             // An earlier graceful stop already took the listener. An abrupt
             // stop still has to tear down surviving connections; gated on the
             // pre-call `TERMINATED` so the H3 arm's insert above does not
@@ -2105,23 +2053,6 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
         let _ = global.throw_value(error_instance);
     }
 
-    pub(crate) fn on_h3_listen(&mut self, socket: Option<*mut uws_sys::h3::ListenSocket>) {
-        if !Self::HAS_H3 {
-            return;
-        }
-        let Some(socket) = socket else { return };
-        // S008: `h3::ListenSocket` is an `opaque_ffi!` ZST — safe deref.
-        let port = bun_opaque::opaque_deref_mut(socket).get_local_port();
-        self.h3_listener = Some(socket);
-        if let Some(port) = port {
-            self.h3_alt_svc = format!("h3=\":{port}\"; ma=86400")
-                .into_bytes()
-                .into_boxed_slice();
-        }
-        // An `http3_server` feature counter is not (yet) declared in
-        // `bun_analytics`. No-op until it is.
-    }
-
     // ─── deinit ──────────────────────────────────────────────────────────────
     /// Tear down the uws app handles and free the boxed server. Only called
     /// from `schedule_deinit`'s task, on listen-failure, or from `finalize()` at VM shutdown.
@@ -2142,12 +2073,6 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
         server.notify_inspector_server_stopped();
         server.abort_handle.leave();
 
-        if Self::HAS_H3 {
-            if let Some(h3a) = server.h3_app.take() {
-                // SAFETY: live H3::App handle owned by this server.
-                unsafe { uws_sys::h3::App::destroy(h3a) };
-            }
-        }
         if let Some(h2a) = server.h2_app.take() {
             // A drain may still be queued for it.
             server
@@ -2194,10 +2119,7 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
             dev_server: None,
             app: None,
             listener: None,
-            h3_app: None,
             h2_app: None,
-            h3_listener: None,
-            h3_alt_svc: Box::<[u8]>::default(),
             js_value: jsc::JsRef::empty(),
             pending_requests: core::cell::Cell::new(0),
             active_connection_count: core::cell::Cell::new(0),
@@ -2906,27 +2828,6 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
             };
             // SAFETY: `this` is the live boxed server from `init()`; no other borrow is live.
             unsafe { (*this).app = Some(app) };
-
-            if Self::HAS_H3 && this_ref.config.http3 {
-                let idle_timeout = this_ref.config.idle_timeout as u32;
-                let h3 = match uws_sys::h3::App::create(&ssl_options, idle_timeout) {
-                    Some(a) => Some(a),
-                    None => {
-                        if !global.has_exception() {
-                            let _ = global.throw(format_args!("Failed to create HTTP/3 server"));
-                        }
-                        // SAFETY: caller contract — `this` is the live boxed server from `init()`.
-                        Self::deinit(this);
-                        return JSValue::ZERO;
-                    }
-                };
-                // SAFETY: `this` is the live boxed server; uniquely owned here.
-                unsafe {
-                    (*this).h3_app = h3;
-                    (*this).mux_request_pool =
-                        <Self as ServerPools<SSL, DEBUG>>::mux_request_pool();
-                }
-            }
             if !Self::attach_http2(this, app) {
                 return JSValue::ZERO;
             }
@@ -2988,25 +2889,6 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
                 // SAFETY: sni_name is a CStr; NUL invariant holds for ZStr.
                 let z = unsafe { bun_core::ZStr::from_raw(name_ptr.cast(), name_len) };
 
-                if Self::HAS_H3 {
-                    if let Some(h3_app) = this_ref.h3_app {
-                        // S008: `h3::App` is an `opaque_ffi!` ZST — safe deref.
-                        if bun_opaque::opaque_deref_mut(h3_app)
-                            .add_server_name_with_options(z, &sni_opts)
-                            .is_err()
-                        {
-                            if !global.has_exception() {
-                                let _ = global.throw(format_args!(
-                                    "Failed to add serverName \"{}\" for HTTP/3",
-                                    bstr::BStr::new(sni_name.to_bytes())
-                                ));
-                            }
-                            // SAFETY: caller contract — `this` is the live boxed server from `init()`.
-                            Self::deinit(this);
-                            return JSValue::ZERO;
-                        }
-                    }
-                }
                 // S012: `NewApp<SSL>` is a ZST opaque — safe `*mut → &mut` deref.
                 if bun_opaque::opaque_deref_mut(app)
                     .add_server_name_with_options(sni_name, &sni_opts, true)
@@ -3107,106 +2989,29 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
 
         match addr {
             Addr::Tcp { port, host } => {
-                // With `{port: 0, http3: true}` we bind TCP:0 (kernel picks N),
-                // then must bind UDP:N for QUIC so Alt-Svc works. UDP:N may
-                // already be held by an unrelated process. When the user asked
-                // for "any port" (0), close TCP:N and retry the whole TCP+UDP
-                // bind so the kernel picks a fresh N. Never retry a
-                // user-specified non-zero port.
-                let max_attempts: u8 = if Self::HAS_H3 && tcp && port == 0 {
-                    3
-                } else {
-                    1
-                };
-                let mut attempt: u8 = 0;
-                loop {
-                    attempt += 1;
-                    if tcp {
-                        // SAFETY: app is a live uws handle owned by this server. No
-                        // `&*this` is live across this call; the trampoline's
-                        // `&mut *this` is the sole borrow while it runs.
-                        unsafe {
-                            (*app).listen_with_config(
-                                Some(trampoline::on_listen::<SSL, DEBUG>),
-                                this.cast::<c_void>(),
-                                uws_app_c::uws_app_listen_config_t {
-                                    port: port as c_int,
-                                    host,
-                                    options,
-                                },
-                            );
-                        }
+                if tcp {
+                    // SAFETY: app is a live uws handle owned by this server. No
+                    // `&*this` is live across this call; the trampoline's
+                    // `&mut *this` is the sole borrow while it runs.
+                    unsafe {
+                        (*app).listen_with_config(
+                            Some(trampoline::on_listen::<SSL, DEBUG>),
+                            this.cast::<c_void>(),
+                            uws_app_c::uws_app_listen_config_t {
+                                port: port as c_int,
+                                host,
+                                options,
+                            },
+                        );
                     }
-
-                    if Self::HAS_H3 {
-                        // Re-derive: `listener` was just written by `on_listen`.
-                        if let Some(h3_app) = this_ref.h3_app {
-                            // Same UDP port as the TCP listener so Alt-Svc works.
-                            let h3_port: u16 = match this_ref.listener {
-                                // SAFETY: ls is a live uws ListenSocket FFI handle
-                                // (just set by on_listen).
-                                Some(ls) => bun_opaque::opaque_deref_mut(ls)
-                                    .get_local_port()
-                                    .unwrap_or(port),
-                                None => port,
-                            };
-                            // S008: `h3::App` is an `opaque_ffi!` ZST — safe deref.
-                            // No `&*this` is live across this call; the h3
-                            // trampoline's `&mut *this` is the sole borrow while it
-                            // runs (the closure is capture-less).
-                            bun_opaque::opaque_deref_mut(h3_app).listen_with_config(
-                                this,
-                                |s: &mut Self, ls: Option<&mut uws_sys::h3::ListenSocket>| {
-                                    s.on_h3_listen(ls.map(std::ptr::from_mut));
-                                },
-                                &uws_sys::h3::ListenConfig {
-                                    port: h3_port,
-                                    host,
-                                    options,
-                                },
-                            );
-                            // Re-derive: `h3_listener` was just written by `on_h3_listen`.
-                            if this_ref.h3_listener.is_none() {
-                                if attempt < max_attempts {
-                                    // UDP:N is taken — release TCP:N so the next
-                                    // attempt gets a fresh kernel-chosen port.
-                                    // Only retry if TCP actually succeeded.
-                                    // SAFETY: `this` is the live boxed server; no other borrow is live across this take.
-                                    if let Some(ls) = unsafe { (*this).listener.take() } {
-                                        bun_opaque::opaque_deref_mut(ls).close();
-                                        continue;
-                                    }
-                                }
-                                if !global.has_exception() {
-                                    let _ = global.throw(format_args!(
-                                        "Failed to listen on UDP port {h3_port} for HTTP/3"
-                                    ));
-                                    // post-match `has_exception()` check below handles
-                                    // deinit + return ZERO.
-                                }
-                            }
-                            if !tcp {
-                                // SAFETY: per-thread VM singleton; no aliasing `&mut`.
-                                jsc::VirtualMachine::get().as_mut().event_loop_handle =
-                                    Some(bun_io::Loop::get());
-                            }
-                        }
-                    }
-                    break;
+                }
+                if !tcp {
+                    // SAFETY: per-thread VM singleton; no aliasing `&mut`.
+                    jsc::VirtualMachine::get().as_mut().event_loop_handle =
+                        Some(bun_io::Loop::get());
                 }
             }
             Addr::Unix { ptr, len } => {
-                if Self::HAS_H3 {
-                    // SAFETY: `this` is the live boxed server; no other borrow is live across this take.
-                    if let Some(h3a) = unsafe { (*this).h3_app.take() } {
-                        // QUIC over AF_UNIX is non-standard and Alt-Svc can't
-                        // advertise it; drop the H3 listener instead of wiring
-                        // an exotic transport nobody can reach.
-                        bun_core::warn!("http3: true with a unix socket — HTTP/3 listener skipped");
-                        // SAFETY: h3a is a live H3::App handle just taken from self.h3_app.
-                        unsafe { uws_sys::h3::App::destroy(h3a) };
-                    }
-                }
                 // SAFETY: ptr/len reference `config.address`'s ZBox; NUL
                 // sentinel at `ptr[len]` holds for ZStr::from_raw.
                 let z = unsafe { bun_core::ZStr::from_raw(ptr, len) };
@@ -3670,7 +3475,6 @@ pub(crate) trait ServerLike {
     fn on_request_complete(&mut self);
     fn dev_server(&self) -> Option<&crate::bake::DevServer::DevServer>;
     fn js_value(&self) -> &jsc::JsRef;
-    fn h3_alt_svc(&self) -> Option<&[u8]>;
     fn terminated(&self) -> bool;
     /// Return `ctx` to the per-server HiveArray pool for the matching transport.
     /// Erased to `*mut c_void` so the trait stays object-safe and doesn't need
@@ -3712,10 +3516,6 @@ impl<const SSL: bool, const DEBUG: bool> ServerLike for NewServer<SSL, DEBUG> {
     #[inline(always)]
     fn js_value(&self) -> &jsc::JsRef {
         &self.js_value
-    }
-    #[inline]
-    fn h3_alt_svc(&self) -> Option<&[u8]> {
-        Self::h3_alt_svc(self)
     }
     #[inline(always)]
     fn terminated(&self) -> bool {
@@ -3775,7 +3575,7 @@ pub(crate) struct AnyServer {
 impl AnyServer {
     // ─── tag-checked downcasts ───────────────────────────────────────────────
     // Centralize the `unsafe { &*self.ptr.cast() }` pattern that the dispatch
-    // macro and `h3_alt_svc` open-coded. Each accessor debug-asserts the tag
+    // macro open-coded. Each accessor debug-asserts the tag
     // so a mismatched call trips in debug builds rather than silently aliasing
     // the wrong monomorphization.
     //
@@ -3885,7 +3685,7 @@ macro_rules! any_server_dispatch_mut {
 /// Binds `$s: *mut NewServer<SSL, DEBUG>` (raw, NOT `&`/`&mut` — the target
 /// fns take `this: *mut Self` and may re-enter JS) and `$r: *mut
 /// uws_sys::Response<SSL>`. Tag↔SSL invariant is enforced by
-/// `assert_ssl`/`assert_no_ssl` (panics on `AnyResponse::H3`, matching the
+/// `assert_ssl`/`assert_no_ssl` (matching the
 /// hand-written arms this replaces). The body is monomorphized four times, so
 /// `NewServer::method($s, …, $r, …)` infers `<SSL, DEBUG>` from `$s`.
 macro_rules! any_server_dispatch_resp {

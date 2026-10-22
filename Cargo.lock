@@ -424,17 +424,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bun_csrf"
-version = "0.0.0"
-dependencies = [
- "bun_base64",
- "bun_boringssl_sys",
- "bun_core",
- "bun_sha_hmac",
- "strum",
-]
-
-[[package]]
 name = "bun_css"
 version = "0.0.0"
 dependencies = [
@@ -713,81 +702,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bun_install"
-version = "0.0.0"
-dependencies = [
- "bitflags",
- "bstr",
- "bun_alloc",
- "bun_analytics",
- "bun_ast",
- "bun_base64",
- "bun_boringssl_sys",
- "bun_bunfig",
- "bun_clap",
- "bun_collections",
- "bun_core",
- "bun_crash_handler",
- "bun_dns",
- "bun_dotenv",
- "bun_errno",
- "bun_event_loop",
- "bun_glob",
- "bun_http",
- "bun_ini",
- "bun_install_types",
- "bun_io",
- "bun_js_parser",
- "bun_js_printer",
- "bun_libarchive",
- "bun_libdeflate_sys",
- "bun_options_types",
- "bun_parsers",
- "bun_patch",
- "bun_paths",
- "bun_perf",
- "bun_picohttp",
- "bun_ptr",
- "bun_resolver",
- "bun_semver",
- "bun_sha_hmac",
- "bun_simdutf_sys",
- "bun_spawn",
- "bun_sys",
- "bun_threading",
- "bun_transpiler",
- "bun_url",
- "bun_uws",
- "bun_which",
- "bun_wyhash",
- "bytemuck",
- "const_format",
- "enum-map",
- "scopeguard",
- "strum",
- "thiserror",
-]
-
-[[package]]
-name = "bun_install_jsc"
-version = "0.0.0"
-dependencies = [
- "bstr",
- "bun_alloc",
- "bun_ast",
- "bun_core",
- "bun_dotenv",
- "bun_ini",
- "bun_install",
- "bun_js_parser_jsc",
- "bun_jsc",
- "bun_options_types",
- "bun_paths",
- "bun_sys",
- "scopeguard",
-]
-
-[[package]]
 name = "bun_install_types"
 version = "0.0.0"
 dependencies = [
@@ -839,7 +753,6 @@ dependencies = [
  "bun_options_types",
  "bun_paths",
  "bun_ptr",
- "bun_react_compiler",
  "bun_url",
  "bun_wyhash",
  "bytemuck",
@@ -918,7 +831,6 @@ dependencies = [
  "bun_hash",
  "bun_http",
  "bun_http_types",
- "bun_install",
  "bun_io",
  "bun_js_parser",
  "bun_js_printer",
@@ -955,23 +867,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "bun_libarchive"
-version = "0.0.0"
-dependencies = [
- "bstr",
- "bun_alloc",
- "bun_collections",
- "bun_core",
- "bun_errno",
- "bun_opaque",
- "bun_paths",
- "bun_sys",
- "bun_wyhash",
- "scopeguard",
- "thiserror",
 ]
 
 [[package]]
@@ -1154,22 +1049,9 @@ dependencies = [
  "bun_glob",
  "bun_lint",
  "bun_lint_oxlint",
- "bun_lint_react_compiler",
  "bun_semver",
  "rustc-hash",
  "smallvec",
-]
-
-[[package]]
-name = "bun_lint_react_compiler"
-version = "0.0.0"
-dependencies = [
- "bun_alloc",
- "bun_ast",
- "bun_core",
- "bun_lint",
- "bun_react_compiler",
- "rustc-hash",
 ]
 
 [[package]]
@@ -1194,13 +1076,6 @@ dependencies = [
  "bun_lint_oxlint",
  "rustc-hash",
  "smallvec",
-]
-
-[[package]]
-name = "bun_lsquic_sys"
-version = "0.0.0"
-dependencies = [
- "bun_core",
 ]
 
 [[package]]
@@ -1370,20 +1245,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bun_react_compiler"
-version = "0.0.0"
-dependencies = [
- "bun_alloc",
- "bun_ast",
- "bun_collections",
- "bun_core",
- "bun_threading",
- "enumset",
- "rustc-hash",
- "smallvec",
-]
-
-[[package]]
 name = "bun_resolve_builtins"
 version = "0.0.0"
 dependencies = [
@@ -1480,7 +1341,6 @@ dependencies = [
  "bun_collections",
  "bun_core",
  "bun_crash_handler",
- "bun_csrf",
  "bun_css",
  "bun_css_jsc",
  "bun_dns",
@@ -1494,19 +1354,15 @@ dependencies = [
  "bun_http",
  "bun_http_jsc",
  "bun_http_types",
- "bun_install",
- "bun_install_jsc",
  "bun_install_types",
  "bun_io",
  "bun_js_parser",
  "bun_js_parser_jsc",
  "bun_js_printer",
  "bun_jsc",
- "bun_libarchive",
  "bun_libdeflate_sys",
  "bun_libuv_sys",
  "bun_lint_driver",
- "bun_lsquic_sys",
  "bun_md",
  "bun_node_path",
  "bun_opaque",
@@ -1543,7 +1399,6 @@ dependencies = [
  "bun_url",
  "bun_uws",
  "bun_uws_sys",
- "bun_valkey",
  "bun_watcher",
  "bun_which",
  "bun_wyhash",
@@ -1708,15 +1563,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bun_shim_impl"
-version = "0.0.0"
-dependencies = [
- "bun_opaque",
- "bun_windows_sys",
- "bytemuck",
-]
-
-[[package]]
 name = "bun_simdutf_sys"
 version = "0.0.0"
 
@@ -1858,7 +1704,6 @@ dependencies = [
  "bun_errno",
  "bun_exe_format",
  "bun_http",
- "bun_libarchive",
  "bun_opaque",
  "bun_options_types",
  "bun_parsers",
@@ -1999,15 +1844,6 @@ dependencies = [
  "libc",
  "strum",
  "thiserror",
-]
-
-[[package]]
-name = "bun_valkey"
-version = "0.0.0"
-dependencies = [
- "bstr",
- "bun_core",
- "strum",
 ]
 
 [[package]]

@@ -180,7 +180,6 @@ public:
     JSC::IsoHeapCellType m_heapCellTypeForJSWorkerGlobalScope;
     JSC::IsoHeapCellType m_heapCellTypeForNodeVMGlobalObject;
     JSC::IsoHeapCellType m_heapCellTypeForHandleScopeImpl;
-    JSC::IsoHeapCellType m_heapCellTypeForBakeGlobalObject;
     JSC::IsoHeapCellType m_heapCellTypeForNativePromiseContext;
     JSC::IsoHeapCellType m_heapCellTypeForJSModuleGraph;
     // JSC::IsoHeapCellType m_heapCellTypeForGeneratedClass;

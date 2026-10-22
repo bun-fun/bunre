@@ -1,30 +1,23 @@
 #pragma once
 #include "root.h"
 #include "headers-handwritten.h"
-#include "BakeGlobalObject.h"
 #include "JavaScriptCore/SourceOrigin.h"
 
 namespace Bake {
 
 class SourceProvider;
 
-extern "C" void Bun__addBakeSourceProviderSourceMap(void* bun_vm, SourceProvider* opaque_source_provider, const BunString* specifier);
-extern "C" void Bun__removeBakeSourceProviderSourceMap(void* bun_vm, SourceProvider* opaque_source_provider, const BunString* specifier);
-
 class SourceProvider final : public JSC::StringSourceProvider {
 public:
     static Ref<SourceProvider> create(
-        JSC::JSGlobalObject* globalObject,
+        JSC::JSGlobalObject*,
         const String& source,
         const JSC::SourceOrigin& sourceOrigin,
         String&& sourceURL,
         const TextPosition& startPosition,
         JSC::SourceProviderSourceType sourceType)
     {
-        auto* zigGlobalObject = uncheckedDowncast<Zig::GlobalObject>(globalObject);
-        auto provider = adoptRef(*new SourceProvider(zigGlobalObject->bunVM(), source, sourceOrigin, WTF::move(sourceURL), startPosition, sourceType));
-        auto specifier = Bun::toString(provider->sourceURL());
-        Bun__addBakeSourceProviderSourceMap(zigGlobalObject->bunVM(), provider.ptr(), &specifier);
+        auto provider = adoptRef(*new SourceProvider(source, sourceOrigin, WTF::move(sourceURL), startPosition, sourceType));
         return provider;
     }
 

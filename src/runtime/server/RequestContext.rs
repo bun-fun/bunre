@@ -49,7 +49,7 @@ impl AdditionalOnAbortCallback {
 // `AnyRequestContext` / `AnyServer`.
 //
 // `MUX` = the request arrived on a stream-multiplexed transport (HTTP/2 or
-// HTTP/3): headers come pre-decoded as a list (`uws::H3::Request` serves
+// HTTP/3): headers come pre-decoded as a list (`uws::http_request::Request` serves
 // both), the body ends at END_STREAM/FIN rather than by Content-Length or
 // chunking, a response never owns the connection (no `Connection: close`,
 // no `Transfer-Encoding`, no upgrade), and the response handle stays valid
@@ -1350,7 +1350,7 @@ where
             // SAFETY: FFI handle
             resp.end(data, close_connection);
             // end_request_streaming_and_drain() must run after the last
-            // `resp` access: its drain_microtasks() can re-enter lsquic (H3)
+            // `resp` access: its drain_microtasks() can re-enter the QUIC engine
             // and free the stream out from under the local `resp` copy.
             self.end_request_streaming_and_drain();
             self.deref();
@@ -1369,7 +1369,7 @@ where
                 resp.end_stream(close_connection);
             }
             // end_request_streaming_and_drain() must run after the last
-            // `resp` access: its drain_microtasks() can re-enter lsquic (H3)
+            // `resp` access: its drain_microtasks() can re-enter the QUIC engine
             // and free the stream out from under the local `resp` copy.
             self.end_request_streaming_and_drain();
             self.deref();
@@ -1418,7 +1418,7 @@ where
             // gate runs later) or already closed.
             resp.close_if_done_and_marked();
             // end_request_streaming_and_drain() must run after the last
-            // `resp` access: its drain_microtasks() can re-enter lsquic (H3)
+            // `resp` access: its drain_microtasks() can re-enter the QUIC engine
             // and free the stream out from under the local `resp` copy.
             self.end_request_streaming_and_drain();
             self.deref();
@@ -1444,7 +1444,7 @@ where
             // SAFETY: FFI handle
             resp.force_close();
             // end_request_streaming_and_drain() must run after the last
-            // `resp` access: its drain_microtasks() can re-enter lsquic (H3)
+            // `resp` access: its drain_microtasks() can re-enter the QUIC engine
             // and free the stream out from under the local `resp` copy.
             self.end_request_streaming_and_drain();
             self.deref();
@@ -1481,7 +1481,7 @@ where
     #[inline]
     fn any_request(r: *mut Req<SSL_ENABLED, MUX>) -> uws::AnyRequest {
         if MUX {
-            uws::AnyRequest::H3(r.cast::<bun_uws_sys::h3::Request>())
+            uws::AnyRequest::H2(r.cast())
         } else {
             uws::AnyRequest::H1(r.cast::<bun_uws_sys::Request>())
         }
@@ -1493,7 +1493,7 @@ where
         // the request callback; both surfaces return request-owned slices.
         unsafe {
             if MUX {
-                (*r.cast::<bun_uws_sys::h3::Request>()).method()
+                (*r.cast::<bun_uws_sys::http_request::Request>()).method()
             } else {
                 (*r.cast::<bun_uws_sys::Request>()).method()
             }
@@ -3895,15 +3895,6 @@ where
             resp.write_header(b"content-type", &content_type.value);
         }
 
-        // Advertise the QUIC endpoint on H1/H2 responses so browsers can
-        // discover it (RFC 7838). Multiple Alt-Svc fields are valid, so a
-        // user-supplied one composes rather than conflicts.
-        if !matches!(resp, uws::AnyResponse::H3(_)) {
-            if let Some(alt) = self.server().h3_alt_svc() {
-                resp.write_header(b"alt-svc", alt);
-            }
-        }
-
         // automatically include the filename when:
         // 1. Bun.file("foo")
         // 2. The content-disposition header is not present
@@ -4678,7 +4669,7 @@ where
                 // SAFETY: req is the live uWS request handle.
                 let url: &[u8] = unsafe {
                     if MUX {
-                        (*req.cast::<bun_uws_sys::h3::Request>()).url()
+                        (*req.cast::<bun_uws_sys::http_request::Request>()).url()
                     } else {
                         (*req.cast::<bun_uws_sys::Request>()).url()
                     }

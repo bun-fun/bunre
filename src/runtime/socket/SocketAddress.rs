@@ -653,12 +653,6 @@ impl SocketAddress {
         self._addr.as_sin6().map(|s| s.flowinfo)
     }
 
-    pub(crate) fn socklen(&self) -> inet::socklen_t {
-        match self._addr.family() {
-            AF::INET => mem::size_of::<inet::sockaddr_in>() as inet::socklen_t,
-            AF::INET6 => mem::size_of::<inet::sockaddr_in6>() as inet::socklen_t,
-        }
-    }
 
     pub(crate) fn estimated_size(&self) -> usize {
         mem::size_of::<SocketAddress>() + self._presentation.get().estimated_size()

@@ -141,7 +141,6 @@
 #include "JSReactElement.h"
 #include "BunMarkdownMeta.h"
 #include "JSSQLStatement.h"
-#include "sqlite/NodeSqlite.h"
 #include "JSStringDecoder.h"
 #include "ModuleGraph.h"
 #include "JSTextEncoder.h"
@@ -188,6 +187,10 @@
 #include "EventLoopTask.h"
 #include "NodeModuleModule.h"
 #include <JavaScriptCore/JSCBytecodeCacheVersion.h>
+#include <JavaScriptCore/JSCTimeZone.h>
+#include <unicode/ucal.h>
+#include <unicode/uenum.h>
+#include <unicode/utypes.h>
 #include "JSPerformanceServerTiming.h"
 #include "JSPerformanceResourceTiming.h"
 #include "JSPerformanceTiming.h"
@@ -225,6 +228,7 @@
 #include "JavaScriptCore/RemoteInspectorServer.h"
 #endif
 
+#include "wtf/DateMath.h"
 #include "NodeFSStatBinding.h"
 #include "NodeFSStatFSBinding.h"
 #include "NodeDirent.h"
@@ -296,12 +300,29 @@ extern "C" void Bun__VirtualMachine__setSamplingProfilerDirectory(void* bunVM, c
 // reporter, which crashes if fopen fails. VirtualMachine::write_profiles writes the report instead.
 static const char8_t* s_samplingProfilerDirectory = nullptr;
 
+// Declared JS_EXPORT_PRIVATE in JavaScriptCore/IntlObject.h (not included here
+// to keep the precompiled-header surface small). Builds the available-timezone
+// entry vector and ID index that intlResolveTimeZoneID / intlTimeZoneIDToString
+// lazily consult; forcing it during startup guarantees the tables exist before
+// the first local-timezone Date op runs timeZoneCacheSlow().
+namespace JSC {
+void initializeAvailableTimeZones();
+}
+
 extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(const char* ptr, size_t length), bool evalMode, bool oneShotStartup, bool shortLivedGlobals)
 {
     static std::once_flag jsc_init_flag;
     // NOLINTBEGIN
     std::call_once(jsc_init_flag, [evalMode, oneShotStartup, shortLivedGlobals, envp, envc, onCrash]() {
         Bun__ensureICUDefaultLocale();
+        {
+            FILE* tf = fopen("E:\\PubCode\\bunre\\tmp_tzprobe.log", "a");
+            if (tf) {
+                fprintf(tf, "JSCInitialize ENTER\n");
+                fflush(tf);
+                fclose(tf);
+            }
+        }
         JSC::Config::enableRestrictedOptions();
         // JSC options come from BUN_JSC_* (applied in the callback below), not JSC_*.
         JSC::Config::disableEnvironmentOptions();
@@ -309,6 +330,59 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
         std::set_terminate([]() { Zig__GlobalObject__onCrash(); });
         WTF::initializeMainThread();
 
+        // Pre-populate JSC::utcTimeZoneIDStorage with the "UTC" zone index so
+        // utcTimeZoneID() short-circuits instead of calling utcTimeZoneIDSlow,
+        // which enumerates the ICU tz table via the C++ wrapper that faults
+        // against the repacked ICU data in this process.
+        if (JSC::utcTimeZoneIDStorage == std::numeric_limits<JSC::TimeZoneID>::max()) {
+            UErrorCode stTz = U_ZERO_ERROR;
+            UEnumeration* tz = ucal_openTimeZoneIDEnumeration(UCAL_ZONE_TYPE_ANY, nullptr, nullptr, &stTz);
+            if (tz) {
+                UErrorCode stIt = U_ZERO_ERROR;
+                JSC::TimeZoneID utcIndex = std::numeric_limits<JSC::TimeZoneID>::max();
+                JSC::TimeZoneID i = 0;
+                int32_t zLen = 0;
+                for (;;) {
+                    const char* z = uenum_next(tz, &zLen, &stIt);
+                    if (!z)
+                        break;
+                    if (utcIndex == std::numeric_limits<JSC::TimeZoneID>::max() && !strcmp(z, "UTC"))
+                        utcIndex = i;
+                    i++;
+                }
+                uenum_close(tz);
+                if (utcIndex != std::numeric_limits<JSC::TimeZoneID>::max()) {
+                    JSC::utcTimeZoneIDStorage = utcIndex;
+                    FILE* tf = fopen("E:\\PubCode\\bunre\\tmp_tzprobe.log", "a");
+                    if (tf) {
+                        fprintf(tf, "prepop utcIndex=%u st=0x%x\n", (unsigned)utcIndex, (unsigned)stTz);
+                        fflush(tf);
+                        fclose(tf);
+                    }
+                }
+            }
+        }
+
+        // Keep ICU's default tz pinned to the host zone via the C-API so
+        // host-zone lookups resolve through the named-zone path.
+        {
+            UChar hostTz[128];
+            UErrorCode stHost = U_ZERO_ERROR;
+            int32_t hostTzLen = ucal_getHostTimeZone(hostTz, 128, &stHost);
+            if (U_SUCCESS(stHost) && hostTzLen > 0) {
+                UErrorCode stSet = U_ZERO_ERROR;
+                ucal_setDefaultTimeZone(hostTz, &stSet);
+            }
+        }
+
+        {
+            FILE* tf = fopen("E:\\PubCode\\bunre\\tmp_tzprobe.log", "a");
+            if (tf) {
+                fprintf(tf, "before JSC::initialize\n");
+                fflush(tf);
+                fclose(tf);
+            }
+        }
         // Use JSC::initialize with a callback to set Options during initialization.
         // The callback runs BEFORE IPInt::initialize() so we can configure WASM options early.
         // Under ASAN+Linux, JSC's notifyOptionsChanged() already disables
@@ -419,6 +493,61 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
             }
             JSC::Options::assertOptionsAreCoherent();
         }); // end JSC::initialize lambda
+
+        {
+            FILE* tf = fopen("E:\\PubCode\\bunre\\tmp_tzprobe.log", "a");
+            if (tf) {
+                fprintf(tf, "after JSC::initialize utcStorage=%u\n", (unsigned)JSC::utcTimeZoneIDStorage);
+                fflush(tf);
+                fclose(tf);
+            }
+        }
+
+        // Force the available-timezone tables (entries vector + ID index) to
+        // be built now, while the ICU C-API is known-good. If these are left
+        // for the first local-timezone Date op, the lazy init inside
+        // intlAvailableTimeZoneEntries() faults against the repacked ICU data
+        // and the first getHours()/toString() dereferences -1.
+        {
+            FILE* tf = fopen("E:\\PubCode\\bunre\\tmp_tzprobe.log", "a");
+            if (tf) {
+                fprintf(tf, "before initializeAvailableTimeZones\n");
+                fflush(tf);
+                fclose(tf);
+            }
+            JSC::initializeAvailableTimeZones();
+            tf = fopen("E:\\PubCode\\bunre\\tmp_tzprobe.log", "a");
+            if (tf) {
+                fprintf(tf, "after initializeAvailableTimeZones\n");
+                fflush(tf);
+                fclose(tf);
+            }
+        }
+
+        // Stand up the date/timezone cache only after JSC core initialization.
+        {
+            FILE* tf = fopen("E:\\PubCode\\bunre\\tmp_tzprobe.log", "a");
+            if (tf) {
+                fprintf(tf, "before WTF::initializeDates utcStorage=%u\n", (unsigned)JSC::utcTimeZoneIDStorage);
+                fflush(tf);
+                fclose(tf);
+            }
+        }
+        // The OpaqueICUTimeZone machinery that timeZoneCacheSlow() uses
+        // (ucal_open / TimeZone::createDefault) requires the JSC runtime state
+        // that JSC::initialize() establishes; calling it before that leaves the
+        // timezone cache unable to open the host calendar and the first local or
+        // explicit-UTC Date/Intl op dereferences an unchecked -1.
+        WTF::initializeDates();
+
+        {
+            FILE* tf = fopen("E:\\PubCode\\bunre\\tmp_tzprobe.log", "a");
+            if (tf) {
+                fprintf(tf, "after WTF::initializeDates utcStorage=%u\n", (unsigned)JSC::utcTimeZoneIDStorage);
+                fflush(tf);
+                fclose(tf);
+            }
+        }
 
 #if OS(WINDOWS) && (CPU(X86_64) || CPU(ARM64))
         // JSC::initialize() registered unwind info + a language-specific SEH
@@ -2062,15 +2191,6 @@ JSC_DEFINE_HOST_FUNCTION(jsWebStreamControllerError, (JSGlobalObject * globalObj
     return JSValue::encode(throwTypeError(globalObject, scope, "Expected a ReadableStream or WritableStream"_s));
 }
 
-extern "C" JSC::EncodedJSValue Bun__Jest__createTestModuleObject(JSC::JSGlobalObject*);
-extern "C" JSC::EncodedJSValue Bun__Jest__testModuleObject(Zig::GlobalObject* globalObject)
-{
-    auto& vm = JSC::getVM(globalObject);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    JSC::JSObject* object = globalObject->lazyTestModuleObject();
-    RETURN_IF_EXCEPTION(scope, {});
-    return JSValue::encode(object);
-}
 
 extern "C" napi_env ZigGlobalObject__makeNapiEnvForFFI(Zig::GlobalObject* globalObject)
 {
@@ -2333,64 +2453,6 @@ void GlobalObject::finishCreation(VM& vm)
              init.setStructure(structure);
              init.setConstructor(constructor);
          } },
-        { OBJECT_OFFSETOF(GlobalObject, m_JSDatabaseSyncClassStructure), [](LazyClassStructure::Initializer& init) {
-             auto* prototype = Bun::JSDatabaseSyncPrototype::create(
-                 init.vm, init.global, Bun::JSDatabaseSyncPrototype::createStructure(init.vm, init.global, init.global->objectPrototype()));
-             auto* structure = Bun::JSDatabaseSync::createStructure(init.vm, init.global, prototype);
-             auto* constructor = Bun::JSDatabaseSyncConstructor::create(
-                 init.vm, init.global, Bun::JSDatabaseSyncConstructor::createStructure(init.vm, init.global, init.global->functionPrototype()), prototype);
-             init.setPrototype(prototype);
-             init.setStructure(structure);
-             init.setConstructor(constructor);
-         } },
-        { OBJECT_OFFSETOF(GlobalObject, m_JSStatementSyncClassStructure), [](LazyClassStructure::Initializer& init) {
-             auto* prototype = Bun::JSStatementSyncPrototype::create(
-                 init.vm, init.global, Bun::JSStatementSyncPrototype::createStructure(init.vm, init.global, init.global->objectPrototype()));
-             auto* structure = Bun::JSStatementSync::createStructure(init.vm, init.global, prototype);
-             auto* constructor = Bun::JSStatementSyncConstructor::create(
-                 init.vm, init.global, Bun::JSStatementSyncConstructor::createStructure(init.vm, init.global, init.global->functionPrototype()), prototype);
-             init.setPrototype(prototype);
-             init.setStructure(structure);
-             init.setConstructor(constructor);
-         } },
-        { OBJECT_OFFSETOF(GlobalObject, m_JSStatementSyncIteratorClassStructure), [](LazyClassStructure::Initializer& init) {
-             // Prototype chain: instance → iterator prototype → %IteratorPrototype%
-             // so for-of / spread / Iterator helpers all work out of the box.
-             auto* prototype = Bun::JSStatementSyncIteratorPrototype::create(
-                 init.vm, init.global, Bun::JSStatementSyncIteratorPrototype::createStructure(init.vm, init.global, init.global->iteratorPrototype()));
-             auto* structure = Bun::JSStatementSyncIterator::createStructure(init.vm, init.global, prototype);
-             init.setPrototype(prototype);
-             init.setStructure(structure);
-         } },
-        { OBJECT_OFFSETOF(GlobalObject, m_JSNodeSqliteSessionClassStructure), [](LazyClassStructure::Initializer& init) {
-             auto* prototype = Bun::JSNodeSqliteSessionPrototype::create(
-                 init.vm, init.global, Bun::JSNodeSqliteSessionPrototype::createStructure(init.vm, init.global, init.global->objectPrototype()));
-             auto* structure = Bun::JSNodeSqliteSession::createStructure(init.vm, init.global, prototype);
-             auto* constructor = Bun::JSNodeSqliteSessionConstructor::create(
-                 init.vm, init.global, Bun::JSNodeSqliteSessionConstructor::createStructure(init.vm, init.global, init.global->functionPrototype()), prototype);
-             init.setPrototype(prototype);
-             init.setStructure(structure);
-             init.setConstructor(constructor);
-         } },
-        { OBJECT_OFFSETOF(GlobalObject, m_JSNodeSqliteLimitsClassStructure), [](LazyClassStructure::Initializer& init) {
-             // Node's DatabaseSyncLimits is a V8 ObjectTemplate: instances get a
-             // per-template prototype whose own [[Prototype]] is Object.prototype.
-             // Match the observable chain (limits → {} → Object.prototype).
-             auto* prototype = JSC::constructEmptyObject(init.global, init.global->objectPrototype());
-             auto* structure = Bun::JSNodeSqliteLimits::createStructure(init.vm, init.global, prototype);
-             init.setPrototype(prototype);
-             init.setStructure(structure);
-         } },
-        { OBJECT_OFFSETOF(GlobalObject, m_JSNodeSqliteTagStoreClassStructure), [](LazyClassStructure::Initializer& init) {
-             auto* prototype = Bun::JSNodeSqliteTagStorePrototype::create(
-                 init.vm, init.global, Bun::JSNodeSqliteTagStorePrototype::createStructure(init.vm, init.global, init.global->objectPrototype()));
-             auto* structure = Bun::JSNodeSqliteTagStore::createStructure(init.vm, init.global, prototype);
-             auto* constructor = Bun::JSNodeSqliteTagStoreConstructor::create(
-                 init.vm, init.global, Bun::JSNodeSqliteTagStoreConstructor::createStructure(init.vm, init.global, init.global->functionPrototype()), prototype);
-             init.setPrototype(prototype);
-             init.setStructure(structure);
-             init.setConstructor(constructor);
-         } },
         { OBJECT_OFFSETOF(GlobalObject, m_JSFFIFunctionStructure), [](LazyClassStructure::Initializer& init) {
              init.setStructure(Zig::JSFFIFunction::createStructure(init.vm, init.global, init.global->functionPrototype()));
          } },
@@ -2563,23 +2625,6 @@ void GlobalObject::finishCreation(VM& vm)
                  PropertyAttribute::DontDelete | PropertyAttribute::CustomAccessor);
 
              init.set(crypto);
-         } },
-        { OBJECT_OFFSETOF(GlobalObject, m_lazyTestModuleObject), [](const LazyProperty<JSGlobalObject, JSObject>::Initializer& init) {
-             JSC::JSGlobalObject* globalObject = init.owner;
-
-             JSValue result = JSValue::decode(Bun__Jest__createTestModuleObject(globalObject));
-             JSObject* object = result.isEmpty() ? nullptr : result.getObject();
-             if (!object) [[unlikely]] {
-                 // Creation failed and left an exception pending; cache a plain
-                 // object so the LazyProperty stays valid instead of crashing on
-                 // an empty JSValue.
-                 object = JSC::constructEmptyObject(globalObject);
-             }
-             init.set(object);
-         } },
-        { OBJECT_OFFSETOF(GlobalObject, m_testMatcherUtilsObject), [](const LazyProperty<JSGlobalObject, JSObject>::Initializer& init) {
-             JSValue result = JSValue::decode(ExpectMatcherUtils_createSigleton(init.owner));
-             init.set(result.toObject(init.owner));
          } },
         { OBJECT_OFFSETOF(GlobalObject, m_lintHost), [](const LazyProperty<JSGlobalObject, JSObject>::Initializer& init) {
              init.set(Bun::createLintHost(init.vm, init.owner));
@@ -4517,14 +4562,6 @@ GlobalObject::PromiseFunctions GlobalObject::promiseHandlerID(Zig::FFIFunction h
         return GlobalObject::PromiseFunctions::jsFunctionOnLoadObjectResultResolve;
     } else if (handler == jsFunctionOnLoadObjectResultReject) {
         return GlobalObject::PromiseFunctions::jsFunctionOnLoadObjectResultReject;
-    } else if (handler == jsFunctionMockModuleFactoryResolve) {
-        return GlobalObject::PromiseFunctions::jsFunctionMockModuleFactoryResolve;
-    } else if (handler == jsFunctionMockModuleFactoryReject) {
-        return GlobalObject::PromiseFunctions::jsFunctionMockModuleFactoryReject;
-    } else if (handler == Bun__TestScope__Describe2__bunTestThen) {
-        return GlobalObject::PromiseFunctions::Bun__TestScope__Describe2__bunTestThen;
-    } else if (handler == Bun__TestScope__Describe2__bunTestCatch) {
-        return GlobalObject::PromiseFunctions::Bun__TestScope__Describe2__bunTestCatch;
     } else if (handler == Bun__HTMLRewriter__onHandlerResolve) {
         return GlobalObject::PromiseFunctions::Bun__HTMLRewriter__onHandlerResolve;
     } else if (handler == Bun__HTMLRewriter__onHandlerReject) {

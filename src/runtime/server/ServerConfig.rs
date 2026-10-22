@@ -400,7 +400,6 @@ macro_rules! impl_mux_app {
     };
 }
 impl_mux_app!(uws::h2::App);
-impl_mux_app!(uws::h3::App);
 
 pub(crate) fn apply_static_route_mux<T: StaticRouteLike, A: MuxApp>(
     server: AnyServer,

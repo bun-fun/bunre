@@ -198,7 +198,8 @@ function shimGraphDir(cfg: Config): string {
 
 /** The plans build.ninja is generated from: inputs of the regen edge (configure.ts). */
 export function rustPlanFiles(cfg: Config): string[] {
-  return [planPath(rustTargetDir(cfg)), ...(cfg.windows ? [planPath(shimGraphDir(cfg))] : [])];
+  // bunre has no package-manager tier, so there is no `.bin/` shim graph to plan.
+  return [planPath(rustTargetDir(cfg))];
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -737,10 +738,9 @@ export function emitRust(n: Ninja, cfg: Config, inputs: RustBuildInputs): string
     return { dir, file: emitRustPlan(n, cfg, dir, { input, inputs: planEdgeInputs }), plan: readPlan(dir, input) };
   };
   const runtime = planned(rustTargetDir(cfg), { args, env, rustflags });
-  const shim = cfg.windows
-    ? planned(shimGraphDir(cfg), shimCargoInvocation(cfg, { env, targetDir, triple }))
-    : undefined;
-  const planFiles = [runtime.file, ...(shim !== undefined ? [shim.file] : [])];
+  // bunre: no Windows `.bin/` shim graph (it belongs to the removed install tier).
+  const shim: undefined = undefined;
+  const planFiles = [runtime.file];
   n.phony("rust-plan", planFiles);
 
   // ─── Units ───
@@ -766,26 +766,6 @@ export function emitRust(n: Ninja, cfg: Config, inputs: RustBuildInputs): string
   // The shim first: bun_install embeds its executable, so every edge of that package waits for it. Its crates
   // (bun_windows_sys, bun_opaque and the shim itself) include nothing generated, so they wait for no codegen.
   const packageInputs: Record<string, string[]> = {};
-  if (shim?.plan !== undefined) {
-    const graph = buildRustGraph(shim.plan, shim.dir);
-    assert(
-      graph.root.kind === "bin",
-      `shim plan root ${graph.root.crateName} is a ${graph.root.kind}, expected the bin`,
-    );
-    const exe = windowsShimPath(cfg);
-    emitRustUnits(
-      n,
-      { ...context, graph, binDestination: exe },
-      {
-        localOrderOnly: [],
-        implicitInputs: {},
-        vendorStamps: inputs.vendorStamps,
-        rootValidations: inputs.shimValidations,
-      },
-    );
-    n.phony("bun-shim", [exe]);
-    packageInputs.bun_install = [exe];
-  }
 
   const graph = buildRustGraph(runtime.plan, runtime.dir);
   assert(

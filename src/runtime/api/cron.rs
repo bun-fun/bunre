@@ -1514,13 +1514,6 @@ impl CronJob {
         Self::remove_from_list(this);
     }
 
-    /// The fake heap dropped this job's timer (`useRealTimers()` /
-    /// `clearAllTimers()`): stop the job as `stop()` would, so it does not
-    /// keep the event loop alive for a timer that can no longer fire.
-    pub(crate) fn stop_dropped_from_fake_heap(this: ThisPtr<Self>) {
-        Self::self_stop(this, VirtualMachine::get());
-    }
-
     /// The context of the script that scheduled the job stopped. A tick's promise that is pending
     /// may still settle (the host, or another graph, may hold it): its reactions' cell keeps the
     /// job until then, or until the promise is collected. Nothing else of the job is kept. With

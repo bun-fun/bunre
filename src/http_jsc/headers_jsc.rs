@@ -1,4 +1,4 @@
-//! JSC bridges for `bun.http.{Headers,H2Client,H3Client}`. Keeps `src/http/`
+//! JSC bridges for `bun.http.{Headers,H2Client}`. Keeps `src/http/`
 //! free of JSC types.
 
 use core::sync::atomic::Ordering;
@@ -153,42 +153,9 @@ impl H2TestingAPIs {
     }
 }
 
-struct H3TestingAPIs;
-
-impl H3TestingAPIs {
-    /// Named distinctly from H2's `live_counts` because generate-js2native.ts
-    /// mangles `[^A-Za-z]` to `_`, so the H2 and H3 client paths produce
-    /// the same path prefix and the function name has to differ.
-    fn quic_live_counts(global: &JSGlobalObject, _frame: &CallFrame) -> JsResult<JSValue> {
-        use bun_http::h3_client;
-        let obj = JSValue::create_empty_object(global, 2);
-        // h3 atomics are `AtomicU32`; widen to u64 for `js_number_from_uint64`.
-        obj.put(
-            global,
-            b"sessions",
-            JSValue::js_number_from_uint64(u64::from(
-                h3_client::live_sessions.load(Ordering::Relaxed),
-            )),
-        );
-        obj.put(
-            global,
-            b"streams",
-            JSValue::js_number_from_uint64(u64::from(
-                h3_client::live_streams.load(Ordering::Relaxed),
-            )),
-        );
-        Ok(obj)
-    }
-}
-
-/// Free-fn aliases of [`H2TestingAPIs::live_counts`] /
-/// [`H3TestingAPIs::quic_live_counts`] so `bun_runtime::dispatch::js2native`
-/// can `pub use` them (associated fns aren't importable items).
+/// Free-fn alias of [`H2TestingAPIs::live_counts`] so `bun_runtime::dispatch::js2native`
+/// can `pub use` it (associated fns aren't importable items).
 #[inline]
 pub fn h2_live_counts(global: &JSGlobalObject, frame: &CallFrame) -> JsResult<JSValue> {
     H2TestingAPIs::live_counts(global, frame)
-}
-#[inline]
-pub fn h3_quic_live_counts(global: &JSGlobalObject, frame: &CallFrame) -> JsResult<JSValue> {
-    H3TestingAPIs::quic_live_counts(global, frame)
 }

@@ -20,7 +20,6 @@ use bun_parsers::json_parser;
 // auto-install path is dormant until `bun_install` writes `r.package_manager`;
 // all install-tier value types are the canonical `bun_install_types` shapes.
 
-use ::bun_install_types::resolver_hooks::Behavior as DependencyBehavior;
 pub use ::bun_install_types::resolver_hooks::{
     Dependency, DependencyGroup, DependencyVersion, DependencyVersionTag,
 };
@@ -95,10 +94,6 @@ pub struct PackageJSON {
 
     pub(crate) package_manager_package_id: PackageID,
     pub dependencies: DependencyMap,
-    /// Used instead of `dependencies` for a package in node_modules, so that auto-install only
-    /// parses the row it looks up. Each range is where a group's rows are in `json_tape`.
-    pub(crate) installed_dependency_rows:
-        [core::ops::Range<u32>; INSTALLED_DEPENDENCY_GROUPS.len()],
 
     pub(crate) side_effects: SideEffects,
 
@@ -152,7 +147,6 @@ impl Default for PackageJSON {
             config: None,
             package_manager_package_id: INVALID_PACKAGE_ID,
             dependencies: DependencyMap::default(),
-            installed_dependency_rows: Default::default(),
             side_effects: SideEffects::default(),
             browser_map: BrowserMap::default(),
             exports: None,
@@ -176,38 +170,10 @@ pub enum IncludeDependencies {
 
 const NODE_MODULES_PATH: &str = const_format::concatcp!(SEP_STR, "node_modules", SEP_STR);
 
-/// If a name is in several groups, the last group wins, as it does in `bun install`.
-const INSTALLED_DEPENDENCY_GROUPS: [DependencyGroup; 2] =
-    [DependencyGroup::DEPENDENCIES, DependencyGroup::OPTIONAL];
-
 impl PackageJSON {
-    /// Returns true if auto-install can look up the version of an imported package in this
-    /// package.json.
+    /// Returns true if this package.json declares dependencies the resolver can look up.
     pub(crate) fn lists_dependencies(&self) -> bool {
-        self.dependencies.map.count() > 0
-            || self.package_manager_package_id != INVALID_PACKAGE_ID
-            || self
-                .installed_dependency_rows
-                .iter()
-                .any(|rows| !rows.is_empty())
-    }
-
-    /// The versions that a package in node_modules declares for `name`, highest precedence first.
-    pub(crate) fn installed_dependency_versions<'a>(
-        &'a self,
-        name: &'a [u8],
-    ) -> impl Iterator<Item = (&'a [u8], DependencyBehavior)> {
-        let groups = INSTALLED_DEPENDENCY_GROUPS
-            .iter()
-            .zip(&self.installed_dependency_rows);
-        groups.rev().flat_map(move |(group, rows)| {
-            let tape = self.json_tape.as_deref().filter(|_| !rows.is_empty());
-            let rows = tape.map_or(&[][..], |tape| tape.properties(rows.clone()));
-            rows.iter()
-                .rev()
-                .filter(move |row| row.key.slice() == name)
-                .filter_map(move |row| Some((row.value.as_str()?, group.behavior)))
-        })
+        self.dependencies.map.count() > 0 || self.package_manager_package_id != INVALID_PACKAGE_ID
     }
 
     /// Normalize path separators to forward slashes for glob matching
@@ -529,7 +495,6 @@ impl PackageJSON {
             config: None,
             package_manager_package_id: INVALID_PACKAGE_ID,
             dependencies: DependencyMap::default(),
-            installed_dependency_rows: Default::default(),
             side_effects: SideEffects::Unspecified,
             exports: None,
             imports: None,
@@ -820,72 +785,19 @@ impl PackageJSON {
                     break 'update_dependencies;
                 }
 
-                // // if there is a name & version, check if the lockfile has the package
-                if !package_json.name.is_empty() && !package_json.version.is_empty() {
-                    if let Some(pm) = r.auto_installer() {
-                        let tag = pm.infer_dependency_tag(&package_json.version);
-
-                        if tag == DependencyVersionTag::Npm {
-                            let sliced = Semver::SlicedString::init(
-                                &package_json.version,
-                                &package_json.version,
-                            );
-                            if let Some(dependency_version) = pm.parse_dependency_with_tag(
-                                SemverString::init(&package_json.name, &package_json.name),
-                                Semver::semver_string::Builder::string_hash(&package_json.name),
-                                &package_json.version,
-                                DependencyVersionTag::Npm,
-                                &sliced,
-                                Some(&mut *r_log),
-                            ) {
-                                if dependency_version.is_exact_npm() {
-                                    if let Some(resolved) = pm.lockfile_resolve(
-                                        &package_json.name,
-                                        &dependency_version,
-                                        &package_json.version,
-                                    ) {
-                                        package_json.package_manager_package_id = resolved;
-                                        if resolved > 0 {
-                                            break 'update_dependencies;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // If a name is in several groups, the last group wins, as it does in `bun install`.
-                let dependency_groups: &[DependencyGroup] =
-                    if INCLUDE_DEPENDENCIES == IncludeDependencies::Main {
-                        &[
-                            DependencyGroup::DEPENDENCIES,
-                            DependencyGroup::DEV,
-                            DependencyGroup::OPTIONAL,
-                        ]
-                    } else if !strings::contains(package_json_path, NODE_MODULES_PATH.as_bytes()) {
-                        // One of the project's own package.json files. A package.json in the cache
-                        // has a `package_id`, which is handled above.
-                        &[
-                            DependencyGroup::PEER,
-                            DependencyGroup::DEPENDENCIES,
-                            DependencyGroup::DEV,
-                            DependencyGroup::OPTIONAL,
-                        ]
-                    } else {
-                        // This runs for every package loaded from node_modules, so it only records
-                        // where the rows are and parses nothing.
-                        for (group, rows) in INSTALLED_DEPENDENCY_GROUPS
-                            .iter()
-                            .zip(&mut package_json.installed_dependency_rows)
-                        {
-                            if let Some(group_json) = json.get(group.prop)
-                                && let js_ast::ExprData::EObjectJSON(group_obj) = &group_json.data
-                            {
-                                *rows = group_obj.get().rows();
-                            }
-                        }
-                        break 'update_dependencies;
-                    };
+                // bunre has no lockfile, so the package's own entry never resolves
+                // to a `package_manager_package_id` here — only the `package_id`
+                // argument can set one.
+                let dev_deps = INCLUDE_DEPENDENCIES == IncludeDependencies::Main;
+                let dependency_groups: &[DependencyGroup] = if dev_deps {
+                    &[
+                        DependencyGroup::DEPENDENCIES,
+                        DependencyGroup::DEV,
+                        DependencyGroup::OPTIONAL,
+                    ]
+                } else {
+                    &[DependencyGroup::DEPENDENCIES, DependencyGroup::OPTIONAL]
+                };
 
                 let mut total_dependency_count: usize = 0;
                 for group in dependency_groups {
@@ -948,29 +860,12 @@ impl PackageJSON {
                                     let name_hash =
                                         Semver::semver_string::Builder::string_hash(name_str);
                                     let name = SemverString::init(source_buf, name_str);
-                                    let Some(version_str) = prop.value.as_str() else {
-                                        continue;
-                                    };
-                                    let version_str = slice_in_source_buf(
-                                        source_buf,
-                                        copied,
-                                        &mut cursor,
-                                        version_str,
-                                    );
-                                    let sliced_str =
-                                        Semver::SlicedString::init(source_buf, version_str);
-
-                                    if let Some(dependency_version) = r.parse_dependency(
-                                        name,
-                                        name_hash,
-                                        version_str,
-                                        &sliced_str,
-                                        Some(&mut *r_log),
-                                        !strings::contains(
-                                            package_json_path,
-                                            NODE_MODULES_PATH.as_bytes(),
-                                        ),
-                                    ) {
+                                    // The version parser lives in the install tier, which bunre
+                                    // does not have: record the dependency name with an
+                                    // uninitialized-tag version so the map keys stay
+                                    // populated.
+                                    let dependency_version = Some(DependencyVersion::default());
+                                    if let Some(dependency_version) = dependency_version {
                                         let dependency = Dependency {
                                             name,
                                             version: dependency_version,
@@ -1413,40 +1308,6 @@ pub struct PackageExternal {
 }
 
 impl<'a> Package<'a> {
-    pub(crate) fn count(self, builder: &mut Semver::semver_string::Builder) {
-        builder.count(self.name);
-    }
-
-    pub(crate) fn clone(self, builder: &mut Semver::semver_string::Builder) -> PackageExternal {
-        PackageExternal {
-            name: builder.append_without_pool::<Semver::String>(self.name, 0),
-        }
-    }
-
-    /// Allocate a fresh string buffer and clone `name`/`version`/`subpath`
-    /// into it as offset-encoded `Semver::String`s. Mirrors the inline
-    /// `count` → `allocate` → `clone` Builder dance the resolver does at the
-    /// auto-install pending sites, exposed as the `esm.copy` helper.
-    pub(crate) fn copy(self) -> crate::CrateResult<(PackageExternal, Vec<u8>)> {
-        let mut builder = Semver::semver_string::Builder::default();
-        self.count(&mut builder);
-        builder.allocate()?;
-        let cloned = self.clone(&mut builder);
-        let string_buf = builder.ptr.take().map(|b| b.into_vec()).unwrap_or_default();
-        Ok((cloned, string_buf))
-    }
-
-    pub(crate) fn with_auto_version(self) -> Package<'a> {
-        if self.version.is_empty() {
-            return Package {
-                name: self.name,
-                subpath: self.subpath,
-                version: b"latest",
-            };
-        }
-
-        self
-    }
     pub fn parse_name(specifier: &[u8]) -> Option<&[u8]> {
         let mut slash = strings::index_of_char_neg(specifier, b'/');
         if !strings::starts_with_char(specifier, b'@') {

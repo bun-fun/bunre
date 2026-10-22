@@ -7,7 +7,6 @@ use bun_core::Output;
 
 pub(crate) mod router;
 
-pub(crate) mod production;
 
 // `Bun__add{Bake,DevServer}SourceProvider*` host exports — the Rust side of
 // `BakeSourceProvider.h` / `DevServerSourceProvider.h`. Reached only via the

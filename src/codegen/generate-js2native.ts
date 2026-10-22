@@ -60,8 +60,7 @@ const rustIdentifierPaths: Record<string, string> = {
   "escapeRegExp.rs": "string/escapeRegExp.rs",
   "event_loop.rs": "jsc/event_loop.rs",
   "ffi.rs": "runtime/ffi/ffi.rs",
-  "h2_frame_parser.rs": "runtime/api/bun/h2_frame_parser.rs",
-  "hosted_git_info.rs": "install/hosted_git_info.rs",
+  
   "http/H2Client.rs": "http/H2Client.rs",
   "http/H3Client.rs": "http/H3Client.rs",
   "ini.rs": "ini/ini.rs",
@@ -76,7 +75,6 @@ const rustIdentifierPaths: Record<string, string> = {
   "node_net_binding.rs": "runtime/node/node_net_binding.rs",
   "node_quic_binding.rs": "runtime/node/node_quic_binding.rs",
   "node_zlib_binding.rs": "runtime/node/node_zlib_binding.rs",
-  "npm.rs": "install/npm.rs",
   "pack_command.rs": "runtime/cli/pack_command.rs",
   "parse_args.rs": "runtime/node/util/parse_args.rs",
   "patch.rs": "patch/patch.rs",

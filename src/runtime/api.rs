@@ -27,8 +27,6 @@ pub(crate) use bun_jsc::BuildMessage;
 pub(crate) use bun_jsc::ResolveMessage;
 
 // ─── compiling submodules (api/ dir) ─────────────────────────────────────────
-#[path = "api/Archive.rs"]
-pub(crate) mod archive;
 #[path = "api/BunObject.rs"]
 pub(crate) mod bun_object;
 #[path = "api/crash_handler_jsc.rs"]
@@ -36,9 +34,7 @@ pub(crate) mod crash_handler_jsc;
 #[path = "api/cron.rs"]
 pub(crate) mod cron;
 #[path = "api/cron_parser.rs"]
-pub(crate) mod cron_parser;
-#[path = "api/csrf_jsc.rs"]
-pub(crate) mod csrf_jsc;
+pub mod cron_parser;
 #[path = "api/filesystem_router.rs"]
 pub(crate) mod filesystem_router;
 #[path = "api/glob.rs"]
@@ -48,11 +44,9 @@ pub(crate) mod hash_object;
 #[path = "api/html_rewriter.rs"]
 pub(crate) mod html_rewriter;
 #[path = "api/js_bundle_completion_task.rs"]
-pub(crate) mod js_bundle_completion_task;
-#[path = "api/JSBundler.rs"]
-pub(crate) mod js_bundler;
-#[path = "api/JSTranspiler.rs"]
-pub(crate) mod js_transpiler;
+pub mod js_bundle_completion_task;
+#[path = "api/bundler_plugin.rs"]
+pub mod js_bundler;
 #[path = "api/JSON5Object.rs"]
 pub(crate) mod json5_object;
 #[path = "api/JSONCObject.rs"]
@@ -100,14 +94,6 @@ pub(crate) mod js_bun_spawn_bindings;
 #[path = "api/bun/Terminal.rs"]
 pub(crate) mod bun_terminal_body;
 
-// H2FrameParser — ~338 jsc refs (Strong, JsRef, host_fn getters, AbortSignal).
-// From-scratch node:http2 engine rewrite (will replace h2_frame_parser.rs).
-#[path = "api/bun/h2/mod.rs"]
-pub(crate) mod h2;
-
-#[path = "api/bun/h2_frame_parser.rs"]
-pub(crate) mod h2_frame_parser_body;
-
 #[path = "api/bun/SSLContextCache.rs"]
 pub(crate) mod bun_ssl_context_cache;
 
@@ -127,19 +113,20 @@ pub(crate) mod bun {
     pub(crate) mod terminal {
         pub(crate) use crate::api::bun_terminal_body::Terminal;
     }
-    pub(crate) use terminal::Terminal;
-
-    pub(crate) mod h2_frame_parser {
-        pub(crate) use crate::api::h2_frame_parser_body::H2FrameParser;
-        // js2native thunk (`$rust(h2_frame_parser.rs, …)` in generated_js2native.rs).
-        pub(crate) use crate::api::h2_frame_parser_body::h2_frame_parser_constructor;
-    }
+    pub use terminal::Terminal;
 }
 
-pub(crate) use crate::api::bun::h2_frame_parser::H2FrameParser;
-pub(crate) use crate::api::bun::ssl_context_cache as SSLContextCache;
-pub(crate) use crate::api::js_bundler::BuildArtifact;
-pub(crate) use crate::api::js_bundler::JSBundler;
+pub use crate::api::bun::ssl_context_cache as SSLContextCache;
+pub use crate::api::filesystem_router::FileSystemRouter;
+pub use crate::api::filesystem_router::MatchedRoute;
+pub use crate::api::hash_object as HashObject;
+pub use crate::api::js_bundler::BuildArtifact;
+pub use crate::api::js_bundler::JSBundler;
+pub use crate::api::json5_object as JSON5Object;
+pub use crate::api::toml_object as TOMLObject;
+pub use crate::api::unsafe_object as UnsafeObject;
+pub use crate::api::xml_object as XMLObject;
+pub use crate::api::yaml_object as YAMLObject;
 
 // ─── shared scaffold for Bun.{TOML,JSONC,JSON5,YAML,XML}.parse ───────────────
 //

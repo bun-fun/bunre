@@ -4,7 +4,7 @@
  * Order matters for two reasons:
  *   1. `fetchDeps` relationships — a dep with fetchDeps must come AFTER the
  *      deps it references, so the referenced .ref stamp node exists in ninja
- *      when we add order-only edges to it. (zlib before libarchive.)
+ *      when we add order-only edges to it. (e.g. zlib before a dep that reads its headers.)
  *   2. Link order — when these libs hit the final link line, static linking
  *      resolves left-to-right. Deps that PROVIDE symbols should come after
  *      deps that USE them. This list becomes the link order.
@@ -16,7 +16,6 @@ import { brotli } from "./brotli.ts";
 import { cares } from "./cares.ts";
 import { hdrhistogram } from "./hdrhistogram.ts";
 import { highway } from "./highway.ts";
-import { libarchive } from "./libarchive.ts";
 import { libdeflate } from "./libdeflate.ts";
 import { libjpegTurbo } from "./libjpeg-turbo.ts";
 import { libspng } from "./libspng.ts";
@@ -25,7 +24,6 @@ import { libwebp } from "./libwebp.ts";
 import { lolhtml } from "./lolhtml.ts";
 import { lshpack } from "./lshpack.ts";
 import { lsqpack } from "./lsqpack.ts";
-import { lsquic } from "./lsquic.ts";
 import { mimalloc } from "./mimalloc.ts";
 import { nodejsHeaders } from "./nodejs-headers.ts";
 import { picohttpparser } from "./picohttpparser.ts";
@@ -39,7 +37,7 @@ import { zstd } from "./zstd.ts";
 /**
  * All deps in dependency-resolution + link order.
  *
- * zlib FIRST — libarchive's fetchDeps references it.
+ * zlib FIRST — the gzip-compressing deps reference its headers from fetchDeps.
  * brotli libs in internal dep order (common last on link line).
  * boringssl near the end — many things depend on crypto/ssl symbols.
  */
@@ -52,7 +50,6 @@ export const allDeps: readonly Dependency[] = [
   zstd,
   brotli,
   libdeflate,
-  libarchive,
   // Image codecs — libspng has fetchDeps:["zlib"], so after zlib.
   libjpegTurbo,
   libspng,
@@ -69,10 +66,6 @@ export const allDeps: readonly Dependency[] = [
   sqlite,
   tinycc,
   boringssl,
-  // lsquic after boringssl: needs ssl.h at compile time (fetchDeps), and as
-  // a DirectBuild dep its .o files go straight on the link line so static
-  // link order doesn't apply.
-  lsquic,
   // WebKit LAST in link order — WTF/JSC provide symbols that everything
   // above might reference (via JavaScriptCore types in headers).
   webkit,
@@ -85,7 +78,6 @@ export {
   cares,
   hdrhistogram,
   highway,
-  libarchive,
   libdeflate,
   libjpegTurbo,
   libspng,
@@ -94,7 +86,6 @@ export {
   lolhtml,
   lshpack,
   lsqpack,
-  lsquic,
   mimalloc,
   nodejsHeaders,
   picohttpparser,

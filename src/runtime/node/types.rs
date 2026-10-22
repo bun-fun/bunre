@@ -126,8 +126,50 @@ impl BlobOrStringOrBuffer {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn byte_length(&self) -> usize {
         self.slice().len()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn from_js_maybe_file_maybe_async(
+        global: &JSGlobalObject,
+        value: JSValue,
+        file_blobs: FileBlobs,
+        flavor: Flavor,
+    ) -> JsResult<Option<BlobOrStringOrBuffer>> {
+        // Check StringOrBuffer first because it's more common and cheaper.
+        let str = StringOrBuffer::from_js_maybe_async(global, value, flavor, StringObjects::Allow)?;
+        let str = match str {
+            Some(s) => s,
+            None => {
+                // `as_class_ref` is the safe shared-borrow downcast (centralised
+                // deref proof in `JSValue`); the JS wrapper roots the payload
+                // while `value` is on the stack. All `Blob` accessors below
+                // take `&self`.
+                let Some(blob) = value.as_class_ref::<Blob>() else {
+                    return Ok(None);
+                };
+                if file_blobs == FileBlobs::Reject && blob.needs_to_read_file() {
+                    return Err(global
+                        .throw_invalid_arguments(format_args!("File blob cannot be used here")));
+                }
+
+                if flavor == Flavor::Async {
+                    // For async/cross-thread usage, copy the blob data to an owned slice
+                    // rather than referencing the store which isn't thread-safe
+                    let blob_data = blob.shared_view();
+                    let owned_data: Vec<u8> = blob_data.to_vec();
+                    return Ok(Some(Self::StringOrBuffer(StringOrBuffer::owned(
+                        owned_data,
+                    ))));
+                }
+
+                return Ok(Some(Self::Blob(Box::new(blob.dupe()))));
+            }
+        };
+
+        Ok(Some(Self::StringOrBuffer(str)))
     }
 
     pub(crate) fn from_js_maybe_file(
@@ -282,13 +324,6 @@ impl StringOrBuffer<'_> {
 unsafe impl ThreadIsolatedArg for StringOrBuffer<'static> {}
 
 impl StringOrBuffer<'static> {
-    /// Rust-owned bytes for a work-pool job.
-    #[inline]
-    pub(crate) fn owned_isolated(bytes: Vec<u8>) -> ThreadIsolated<Self> {
-        // SAFETY: owned bytes only.
-        unsafe { ThreadIsolated::new(Self::owned(bytes)) }
-    }
-
     /// Copies a `Sync`-parsed buffer's current bytes, or isolates a string, for a work-pool job.
     pub(crate) fn make_thread_isolated_copy(&mut self, global: &JSGlobalObject) -> JsResult<()> {
         match self {

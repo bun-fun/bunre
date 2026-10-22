@@ -10,11 +10,8 @@ members = [
   "src/errno",
   "src/glob",
   "src/http",
-  "src/install",
-  "src/install/windows-shim",
   "src/parsers",
   "src/io",
-  "src/libarchive",
   "src/md",
   "src/paths",
   "src/resolver",
@@ -35,7 +32,6 @@ members = [
   "src/lint/json",
   "src/lint/markdown",
   "src/lint/graph",
-  "src/lint/react_compiler",
   "src/lint/driver",
   "src/lint/conformance",
   "src/format",
@@ -45,13 +41,13 @@ members = [
   "src/sql",
   "src/sys",
   "src/threading",
-  "src/valkey",
+  # "src/valkey",
   "src/watcher",
   "src/cares_sys",
   "src/clap",
   "src/clap_macros",
   "src/crash_handler",
-  "src/csrf",
+  # "src/csrf",
   "src/css_jsc",
   "src/dns",
   "src/dotenv",
@@ -61,7 +57,6 @@ members = [
   "src/http_jsc",
   "src/http_types",
   "src/ini",
-  "src/install_jsc",
   "src/install_types",
   "src/js_parser",
   "src/js_parser_jsc",
@@ -111,7 +106,6 @@ members = [
   "src/shell_parser",
   "src/tcc_sys",
   "src/uws_sys",
-  "src/lsquic_sys",
   "src/zstd",
   "src/options_types",
   "src/output",
@@ -119,7 +113,6 @@ members = [
   "src/simdutf_sys",
   "src/which",
   "src/transpiler",
-  "src/react_compiler",
   "src/spawn",
   "src/spawn_sys",
   "src/bunfig",
@@ -172,32 +165,6 @@ split-debuginfo = "unpacked"
 inherits = "release"
 debug = "line-tables-only"
 strip = "none"
-
-# `bun-shim-impl.exe` — the Windows .bin/ launcher PE that gets
-# `include_bytes!`'d into bun.exe and copied next to every package binary by
-# `bun install`. Zig built it freestanding ReleaseFast (no libc,
-# single-threaded, ~13 KiB). The Rust port matches that with
-# `#![no_std]`/`#![no_main]` + a custom `/ENTRY:` (no CRT), and the build
-# script supplies `-Zbuild-std=core,compiler_builtins` with
-# `panic_immediate_abort` so panic-with-args compiles to a bare trap (no
-# `core::fmt::Arguments` materialised). `panic = "abort"` + `lto` +
-# `codegen-units = 1` let LLVM see the whole program; `opt-level = "z"`
-# favours size; `strip = "symbols"` discards the .pdb-equivalent. Always
-# release regardless of bun's own profile: a debug bun should still write
-# release shims.
-[profile.shim]
-inherits = "release"
-panic = "abort"
-opt-level = "z"
-lto = true
-codegen-units = 1
-strip = "symbols"
-# Pin these so the shim PE is byte-identical across bun's own profiles.
-# rust.ts sets CARGO_PROFILE_RELEASE_{LTO,DEBUG_ASSERTIONS} for the main
-# bun_runtime build and the shim build shares that env; without explicit values
-# here the env overrides on `release` would be inherited.
-debug-assertions = false
-overflow-checks = false
 
 [workspace.lints.rust]
 # Every rustc warning is an error. Individual lints below can override this
@@ -379,10 +346,8 @@ bun_css = { path = "src/css" }
 bun_errno = { path = "src/errno" }
 bun_glob = { path = "src/glob" }
 bun_http = { path = "src/http" }
-bun_install = { path = "src/install" }
 bun_parsers = { path = "src/parsers" }
 bun_io = { path = "src/io" }
-bun_libarchive = { path = "src/libarchive" }
 bun_md = { path = "src/md" }
 bun_paths = { path = "src/paths" }
 bun_resolver = { path = "src/resolver" }
@@ -402,7 +367,6 @@ bun_lint_jest = { path = "src/lint/jest" }
 bun_lint_json = { path = "src/lint/json" }
 bun_lint_markdown = { path = "src/lint/markdown" }
 bun_lint_graph = { path = "src/lint/graph" }
-bun_lint_react_compiler = { path = "src/lint/react_compiler" }
 bun_format = { path = "src/format" }
 bun_format_conformance = { path = "src/format/conformance" }
 bun_lint_driver = { path = "src/lint/driver" }
@@ -412,13 +376,13 @@ bun_sourcemap = { path = "src/sourcemap" }
 bun_sql = { path = "src/sql" }
 bun_sys = { path = "src/sys" }
 bun_threading = { path = "src/threading" }
-bun_valkey = { path = "src/valkey" }
+# bun_valkey = { path = "src/valkey" }
 bun_watcher = { path = "src/watcher" }
 bun_cares_sys = { path = "src/cares_sys" }
 bun_clap = { path = "src/clap" }
 bun_clap_macros = { path = "src/clap_macros" }
 bun_crash_handler = { path = "src/crash_handler" }
-bun_csrf = { path = "src/csrf" }
+# bun_csrf = { path = "src/csrf" }
 bun_css_jsc = { path = "src/css_jsc" }
 bun_dns = { path = "src/dns" }
 bun_dotenv = { path = "src/dotenv" }
@@ -428,7 +392,6 @@ bun_highway = { path = "src/highway" }
 bun_http_jsc = { path = "src/http_jsc" }
 bun_http_types = { path = "src/http_types" }
 bun_ini = { path = "src/ini" }
-bun_install_jsc = { path = "src/install_jsc" }
 bun_install_types = { path = "src/install_types" }
 bun_js_parser = { path = "src/js_parser" }
 bun_js_parser_jsc = { path = "src/js_parser_jsc" }
@@ -480,7 +443,6 @@ bun_spawn = { path = "src/spawn" }
 bun_spawn_sys = { path = "src/spawn_sys" }
 bun_tcc_sys = { path = "src/tcc_sys" }
 bun_uws_sys = { path = "src/uws_sys" }
-bun_lsquic_sys = { path = "src/lsquic_sys" }
 bun_zstd = { path = "src/zstd" }
 bun_options_types = { path = "src/options_types" }
 bun_bunfig = { path = "src/bunfig" }
@@ -488,9 +450,6 @@ bun_output = { path = "src/output" }
 bun_simdutf_sys = { path = "src/simdutf_sys" }
 bun_which = { path = "src/which" }
 bun_transpiler = { path = "src/transpiler" }
-
-[profile.release.package.bun_react_compiler]
-opt-level = "s"
 
 # The runners behind `--run-typescript-tests`, `--run-prettier-tests` and `--run-eslint-tests`. Only canary and debug
 # builds have them, and the time goes into what they test, which keeps its own level.

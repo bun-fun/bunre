@@ -24,12 +24,6 @@ public:
     GCClient::IsoSubspace* m_clientSubspaceForNapiClass { nullptr };
     GCClient::IsoSubspace* m_clientSubspaceForJSSQLStatement { nullptr };
     GCClient::IsoSubspace* m_clientSubspaceForJSSQLDatabase { nullptr };
-    GCClient::IsoSubspace* m_clientSubspaceForNodeSqliteDatabaseSync { nullptr };
-    GCClient::IsoSubspace* m_clientSubspaceForNodeSqliteStatementSync { nullptr };
-    GCClient::IsoSubspace* m_clientSubspaceForNodeSqliteStatementSyncIterator { nullptr };
-    GCClient::IsoSubspace* m_clientSubspaceForNodeSqliteSession { nullptr };
-    GCClient::IsoSubspace* m_clientSubspaceForNodeSqliteLimits { nullptr };
-    GCClient::IsoSubspace* m_clientSubspaceForNodeSqliteTagStore { nullptr };
     GCClient::IsoSubspace* m_clientSubspaceForJSSinkConstructor { nullptr };
     GCClient::IsoSubspace* m_clientSubspaceForJSSinkController { nullptr };
     GCClient::IsoSubspace* m_clientSubspaceForJSSink { nullptr };

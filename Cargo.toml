@@ -40,7 +40,6 @@ members = [
   "src/sql",
   "src/sys",
   "src/threading",
-  # "src/valkey",
   "src/watcher",
   "src/cares_sys",
   "src/clap",
@@ -373,7 +372,6 @@ bun_sourcemap = { path = "src/sourcemap" }
 bun_sql = { path = "src/sql" }
 bun_sys = { path = "src/sys" }
 bun_threading = { path = "src/threading" }
-# bun_valkey = { path = "src/valkey" }
 bun_watcher = { path = "src/watcher" }
 bun_cares_sys = { path = "src/cares_sys" }
 bun_clap = { path = "src/clap" }

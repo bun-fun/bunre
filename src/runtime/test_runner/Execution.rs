@@ -48,7 +48,7 @@ use super::bun_test::{
     group_begin, AddedInPhase, BunTest, BunTestPtr, EntryData, ExecutionEntry,
     HandleUncaughtExceptionResult, Order, RefDataValue, ScopeMode, StepResult,
 };
-use crate::test_runner::reporter;
+use crate::cli::test_command;
 
 // ── local shims for upstream Timespec methods not yet ported ───────────────
 // bun_core exposes only the generic `now(mode)` form; wrap the convenience
@@ -82,7 +82,7 @@ fn nn(p: Option<*mut ExecutionEntry>) -> Option<NonNull<ExecutionEntry>> {
 
 bun_core::declare_scope!(jest, visible);
 
-pub struct Execution {
+pub(crate) struct Execution {
     pub(crate) groups: Box<[ConcurrentGroup]>,
     // was `pub(self)`; widened so `RefDataValue::sequence` can
     // split-borrow `groups`/`sequences` without re-entering `sequences_mut`.
@@ -102,7 +102,7 @@ pub struct Execution {
     pub(crate) on_stack_entry_data: core::cell::Cell<Option<super::bun_test::EntryData>>,
 }
 
-pub struct ConcurrentGroup {
+pub(crate) struct ConcurrentGroup {
     pub(crate) sequence_start: usize,
     pub(crate) sequence_end: usize,
     /// Index of the next sequence that has not been started yet
@@ -146,13 +146,13 @@ impl ConcurrentGroup {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ExpectAssertions {
+pub(crate) enum ExpectAssertions {
     NotSet,
     AtLeastOne,
     Exact(u32),
 }
 
-pub struct ExecutionSequence {
+pub(crate) struct ExecutionSequence {
     pub(crate) first_entry: Option<NonNull<ExecutionEntry>>,
     /// Index into ExecutionSequence.entries() for the entry that is not started or currently running
     pub(crate) active_entry: Option<NonNull<ExecutionEntry>>,
@@ -222,7 +222,7 @@ pub enum Result {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Basic {
+pub(crate) enum Basic {
     Pending,
     Pass,
     Fail,
@@ -231,7 +231,7 @@ pub enum Basic {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum PendingIs {
+pub(crate) enum PendingIs {
     PendingIsPass,
     PendingIsFail,
 }
@@ -663,7 +663,7 @@ impl Execution {
                 // SAFETY: deref parent BunTest at point-of-use. `sequence` aliases
                 // `buntest.execution.sequences[i]`; `handle_test_completed`'s signature still takes
                 // both `&mut BunTest` and `&mut ExecutionSequence` (callee could be reshaped to avoid this).
-                reporter::CommandLineReporter::handle_test_completed(
+                test_command::CommandLineReporter::handle_test_completed(
                     unsafe { &mut *buntest.as_ptr() },
                     sequence,
                     // SAFETY: arena-owned entry, alive for lifetime of BunTest

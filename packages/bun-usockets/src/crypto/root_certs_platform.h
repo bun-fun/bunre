@@ -1,7 +1,6 @@
 #pragma once
 
 #include <openssl/x509.h>
-#include "./boringssl_lazy_cert_shim.h"
 
 // Platform-specific certificate loading functions
 extern "C" {

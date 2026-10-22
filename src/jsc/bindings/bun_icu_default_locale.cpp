@@ -21,4 +21,5 @@ extern "C" void Bun__ensureICUDefaultLocale()
 {
     UErrorCode status = U_ZERO_ERROR;
     uloc_setDefault("en_US", &status);
+    uloc_setDefault(nullptr, &status);
 }

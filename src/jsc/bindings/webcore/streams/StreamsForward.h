@@ -74,7 +74,6 @@ class JSBunStandaloneTextSink; // the standalone Text sink (BunStandaloneTextSin
 class JSOneShotDirectSink; // consumeDirectStreamToArrayBuffer's throwaway controller
 class JSReadableStreamIntoArrayOperation; // the array pump's reader/chunks/result state
 class JSNativeStreamSourceAdapter;
-class JSDirectSinkCloseState;
 class JSAsyncIteratorSourceOperation;
 class JSReadStreamIntoSinkOperation;
 class JSTextEncoderStream;
@@ -199,6 +198,12 @@ enum class ReadRequestKind : uint8_t {
 enum class ReadIntoRequestKind : uint8_t {
     Promise, // public byobReader.read(view): context = the JSPromise
     ByteTee, // the byte tee's BYOB read-into request: context = the JSStreamTeeState
+};
+
+// A step that was already deferred to a microtask passes No, because it has to make progress (see streamLinkMustDefer).
+enum class MayDefer : bool {
+    No,
+    Yes,
 };
 
 // Bun `type:"direct"`

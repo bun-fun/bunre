@@ -175,6 +175,73 @@ describe("bun", () => {
       );
     });
   });
+  describe("getcompletes", () => {
+    test("getcompletes should not panic and should not be empty", () => {
+      const { stdout, exitCode } = spawnSync({
+        cmd: [bunExe(), "getcompletes"],
+        env: bunEnv,
+      });
+      expect(exitCode).toBe(0);
+      expect(stdout.toString()).not.toBeEmpty();
+    });
+
+    // https://github.com/oven-sh/bun/issues/30086
+    test("getcompletes keeps scripts whose names start with 'pre'/'post' when no sibling script exists", () => {
+      using dir = tempDir("getcompletes-pre-post", {
+        "package.json": JSON.stringify({
+          name: "test",
+          scripts: {
+            // standalone scripts — nothing named `ttier`, `pare-release`, `gres`, `css`, `view`
+            "prettier": "echo prettier",
+            "prettier:fix": "echo prettier:fix",
+            "prepare-release": "echo prepare-release",
+            "postgres": "echo postgres",
+            "postcss": "echo postcss",
+            "preview": "echo preview",
+            // plain scripts
+            "build": "echo build",
+            "dev": "echo dev",
+            "lint": "echo lint",
+            "lint:fix": "echo lint:fix",
+            "fix": "echo fix",
+            "test": "echo test",
+            // real lifecycle hooks — these SHOULD be hidden (sibling exists)
+            "prebuild": "echo prebuild",
+            "postbuild": "echo postbuild",
+            "pretest": "echo pretest",
+          },
+        }),
+      });
+
+      for (const filter of ["s", "i", "r", "g", "z"]) {
+        const { stdout, exitCode } = spawnSync({
+          cmd: [bunExe(), "getcompletes", filter],
+          env: bunEnv,
+          cwd: String(dir),
+        });
+        const lines = stdout
+          .toString()
+          .split("\n")
+          .map(l => l.split("\t")[0]) // "z" filter emits "name\tdescription"
+          .filter(Boolean);
+
+        // standalone pre/post-prefixed scripts must be present
+        expect(lines).toContain("prettier");
+        expect(lines).toContain("prettier:fix");
+        expect(lines).toContain("prepare-release");
+        expect(lines).toContain("postgres");
+        expect(lines).toContain("postcss");
+        expect(lines).toContain("preview");
+
+        // real npm lifecycle hooks (sibling `build`/`test` exists) must still be hidden
+        expect(lines).not.toContain("prebuild");
+        expect(lines).not.toContain("postbuild");
+        expect(lines).not.toContain("pretest");
+
+        expect(exitCode).toBe(0);
+      }
+    });
+  });
   // On Windows `bun completions` installs bunx as a hardlink (or a .cmd shim) instead of a symlink.
   describe.skipIf(isWindows)("completions", () => {
     const bunxName = isDebug ? "bunx-debug" : "bunx";
@@ -276,10 +343,113 @@ describe("bun", () => {
       expect(stderr).toContain("Could not get current working directory");
       expect(exitCode).toBe(1);
     });
+
+    // IS_BUN_AUTO_UPDATE is what `bun upgrade` sets: the file is installed although stdout is a pipe.
+    async function installCompletions(args: string[], env: Record<string, string | undefined>) {
+      await using proc = Bun.spawn({
+        cmd: [bunExe(), "completions", ...args],
+        env: {
+          ...bunEnv,
+          BUN_INSTALL: undefined,
+          XDG_CONFIG_HOME: undefined,
+          XDG_DATA_HOME: undefined,
+          fpath: undefined,
+          IS_BUN_AUTO_UPDATE: "true",
+          ...env,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+      expect(stdout).toBe("");
+      return { stderr, exitCode };
+    }
+
+    // A fresh fish setup has `fish/` and no `fish/completions/`. The search then ended at /etc/fish/completions.
+    test.concurrent.each([
+      ["$HOME/.config", { ".config": { fish: {} } }, [".config", "fish", "completions"], "HOME"],
+      ["$XDG_CONFIG_HOME", { fish: {} }, ["fish", "completions"], "XDG_CONFIG_HOME"],
+    ])("fish: makes the completions directory of the fish config in %s", async (_, files, path, variable) => {
+      using dir = tempDir("completions-fish", files);
+      using empty = tempDir("completions-fish-home", {});
+      const completions = join(String(dir), ...path);
+
+      const { stderr, exitCode } = await installCompletions([], {
+        SHELL: "/usr/bin/fish",
+        HOME: String(empty),
+        [variable]: String(dir),
+      });
+      expect(stderr).toContain(`Installed completions to ${completions}/bun.fish`);
+      expect(fs.readFileSync(join(completions, "bun.fish"), "utf8")).toContain("bun");
+      expect(exitCode).toBe(0);
+    });
+
+    describe("zsh", () => {
+      const zsh = (home: string) =>
+        installCompletions([join(home, ".bun")], { HOME: home, ZDOTDIR: home, SHELL: "/bin/zsh" });
+
+      test.concurrent.each([
+        '[ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"',
+        '[ -s "${HOME}/.bun/_bun" ] && source "${HOME}/.bun/_bun"',
+        '[ -s "~/.bun/_bun" ] && source "~/.bun/_bun"',
+        '# bun completions\r\n[ -s "$BUN_INSTALL/_bun" ] && source "$BUN_INSTALL/_bun"\r',
+      ])("leaves a .zshrc alone that already has %j", async snippet => {
+        const zshrc = `export PATH="/usr/local/bin:$PATH"\n\n${snippet}\n`;
+        using dir = tempDir("completions-zshrc", { ".bun/.keep": "", ".zshrc": zshrc });
+
+        const { exitCode } = await zsh(String(dir));
+        expect(fs.readFileSync(join(String(dir), ".zshrc"), "utf8")).toBe(zshrc);
+        expect(exitCode).toBe(0);
+      });
+
+      test.concurrent("adds its line to a .zshrc once", async () => {
+        const zshrc = 'export PATH="/usr/local/bin:$PATH"\n';
+        using dir = tempDir("completions-zshrc-fresh", { ".bun/.keep": "", ".zshrc": zshrc });
+        const path = join(fs.realpathSync(String(dir)), ".bun", "_bun");
+        const added = `${zshrc}\n# bun completions\n[ -s "${path}" ] && source "${path}"\n`;
+
+        expect((await zsh(String(dir))).exitCode).toBe(0);
+        expect(fs.readFileSync(join(String(dir), ".zshrc"), "utf8")).toBe(added);
+        expect((await zsh(String(dir))).exitCode).toBe(0);
+        expect(fs.readFileSync(join(String(dir), ".zshrc"), "utf8")).toBe(added);
+      });
+    });
   });
   describe("--help preserves <placeholder> text", () => {
     const env = { ...bunEnv, NO_COLOR: "1" };
-    const flags: [string, string, string][] = [["run", "--elide-lines", "Number of lines of script output shown"]];
+    const usage: [string, string][] = [
+      ["install", "bun install [flags] <name>@<version>"],
+      ["add", "bun add [flags] <package><@version>"],
+      ["remove", "bun remove [flags] [<packages>]"],
+      ["update", "bun update [flags] <name>@<version>"],
+      ["link", "bun link [flags] [<packages>]"],
+      ["patch", "bun patch [flags or options] <package>@<version>"],
+      ["patch-commit", "bun patch-commit [flags or options] <directory>"],
+      ["info", "bun info [flags] <package>[@<version>] [<property>...]"],
+    ];
+    test.concurrent.each(usage)("bun %s --help usage line", async (cmd, expected) => {
+      await using proc = Bun.spawn({ cmd: [bunExe(), cmd, "--help"], env, stderr: "pipe" });
+      const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+      const line = (stdout + stderr).split(/\r?\n/).find(l => l.startsWith("Usage:")) ?? "";
+      expect(line).toBe(`Usage: ${expected}`);
+      expect(exitCode).toBe(0);
+    });
+
+    const flags: [string, string, string][] = [
+      ["audit", "--audit-level", "greater than or equal to <level> (low,"],
+      ["test", "--rerun-each", "Re-run each test file <NUMBER> times"],
+      ["test", "--bail", "Exit the test suite after <NUMBER> failures"],
+      ["build", "--allow-unresolved", "Use '<empty>' for opaque specifiers"],
+      ["add", "-F, --filter", "Add the package(s) to the matching workspaces instead of the current package"],
+      ["add", "--catalog", 'depend on it as "catalog:" (use --catalog=NAME for a named catalog)'],
+      ["remove", "-F, --filter", "Remove the package(s) from the matching workspaces instead of the current package"],
+      ["install", "-F, --filter", "Install packages for the matching workspaces"],
+      ["install", "--catalog", 'depend on it as "catalog:" (use --catalog=NAME for a named catalog)'],
+      ["audit", "--ignore", "Ignore advisories by GHSA or numeric advisory ID (repeatable)"],
+      ["audit", "-L, --latest", "Also apply fixes your declared ranges exclude, rewriting package.json"],
+      ["update", "-p, --production", "Only update dependencies and optionalDependencies (alias: --prod)"],
+      ["install", "-p, --production", "Don't install devDependencies"],
+    ];
     test.concurrent.each(flags)("bun %s --help keeps placeholder in %s description", async (cmd, flag, expected) => {
       await using proc = Bun.spawn({ cmd: [bunExe(), cmd, "--help"], env, stderr: "pipe" });
       const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
@@ -287,42 +457,77 @@ describe("bun", () => {
       expect(line).toContain(expected);
       expect(exitCode).toBe(0);
     });
+
+    test("bun add --help usage line is intact with FORCE_COLOR=1", async () => {
+      await using proc = Bun.spawn({
+        cmd: [bunExe(), "add", "--help"],
+        env: { ...bunEnv, NO_COLOR: undefined, FORCE_COLOR: "1" },
+        stderr: "pipe",
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+      const out = stdout + stderr;
+      // <blue>\<package\><r> renders to \x1b[34m<package>\x1b[0m, not \x1b[34m\x1b[0m
+      expect(out).toContain("\x1b[34m<package>\x1b[0m");
+      // raw tag markup must not leak through
+      expect(out).not.toContain("<blue>");
+      expect(exitCode).toBe(0);
+    });
   });
 
-  describe("--help lists the commands this build ships", () => {
+  describe("--help lists package manager commands and examples", () => {
     const env = { ...bunEnv, NO_COLOR: "1" };
-    test("bun --help", async () => {
-      await using proc = Bun.spawn({ cmd: [bunExe(), "--help"], env, stderr: "pipe" });
+    const lines: [string, string[], RegExp[]][] = [
+      [
+        "bun --help",
+        [],
+        [
+          /^ {2}dedupe +Remove duplicate versions from the lockfile$/m,
+          /^ {2}prune +Remove packages that are not in the lockfile from node_modules$/m,
+        ],
+      ],
+      [
+        "bun pm --help",
+        ["pm"],
+        [
+          /^ {2}bun pm ls +list the tree of installed dependencies$/m,
+          /^ {2}bun pm licenses +list installed packages grouped by license$/m,
+        ],
+      ],
+      [
+        "bun add --help",
+        ["add"],
+        [
+          /^ {2}Add a dependency to a specific workspace in a monorepo\n {2}bun add zod --filter api$/m,
+          /^ {2}Add to the workspace catalog instead of pinning a version\n {2}bun add --catalog react\n {2}bun add --catalog=testing vitest$/m,
+        ],
+      ],
+      // The bare form only installs the symlink; package.json is written with --save (see the --save
+      // flag row), so the examples must say which form does what.
+      [
+        "bun link --help",
+        ["link"],
+        [
+          /^ {2}Link a previously-registered linkable package into the current project's node_modules\.\n {2}bun link <package>$/m,
+          /^ {2}Also add it to the current project's package\.json as a link: dependency\.\n {2}bun link --save <package>$/m,
+        ],
+      ],
+      [
+        "bun audit --help",
+        ["audit"],
+        [
+          /^ {2}bun audit fix upgrades vulnerable packages to the lowest safe version that still satisfies every dependent's range\.$/m,
+          /^ {2}Upgrade vulnerable packages in bun\.lock and node_modules; package\.json is only changed when an exact pin has to be bumped\.\n {2}bun audit fix$/m,
+          /^ {2}Show what bun audit fix would change without changing anything\.\n {2}bun audit fix --dry-run$/m,
+          /^ {2}Also apply fixes that your package\.json ranges exclude, rewriting those ranges\.\n {2}bun audit fix --latest$/m,
+        ],
+      ],
+    ];
+    test.concurrent.each(lines)("%s", async (_, args, expected) => {
+      await using proc = Bun.spawn({ cmd: [bunExe(), ...args, "--help"], env, stderr: "pipe" });
       const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
       const out = (stdout + stderr).replaceAll("\r\n", "\n");
-      for (const re of [
-        /^ {2}run\s+\.\/my-script\.ts\s+Execute a file with Bun$/m,
-        /^ {12}lint\s+Run a package\.json script$/m,
-      ]) {
-        expect(out).toMatch(re);
-      }
-      // The package manager CLI (install/add/remove/pm/…), bunx, the project
-      // scaffolding commands, and the test/repl/build/upgrade commands are
-      // stripped from this build, so the help text must not advertise them.
-      for (const removed of [
-        /^ {2}install\s/m,
-        /^ {2}add\s/m,
-        /^ {2}remove\s/m,
-        /^ {2}update\s/m,
-        /^ {2}publish\s/m,
-        /^ {2}pm\s/m,
-        /^ {2}why\s/m,
-        /^ {2}init\s/m,
-        /^ {2}create\s/m,
-        /^ {2}x\s/m,
-        /^ {2}test\s/m,
-        /^ {2}repl\s/m,
-        /^ {2}build\s/m,
-        /^ {2}upgrade\s/m,
-        /^ {2}exec\s/m,
-      ]) {
-        expect(out).not.toMatch(removed);
-      }
+      for (const re of expected) expect(out).toMatch(re);
+      expect(out).not.toContain("bun list ");
       expect(exitCode).toBe(0);
     });
   });

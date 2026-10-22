@@ -11,9 +11,13 @@ use bstr::BStr;
 use bun_bundler::options;
 use bun_clap as clap;
 use bun_clap::parse_param;
+use bun_core::env::OperatingSystem;
 use bun_core::strings;
-use bun_core::{self, Global, Output, env_var};
-use bun_options_types::context::{Debugger, DebuggerEnable, HotReload, MacroOptions};
+use bun_core::{self, FeatureFlags, Global, Output, env_var};
+use bun_jsc::RegularExpression;
+use bun_jsc::regular_expression::Flags as RegexFlags;
+use bun_options_types::code_coverage_options::Reporters as CoverageReporters;
+use bun_options_types::context::{Debugger, DebuggerEnable, HotReload, MacroOptions, Shard};
 use bun_options_types::schema::api;
 use bun_paths::platform;
 use bun_paths::resolve_path;
@@ -153,6 +157,9 @@ const RUNTIME_PARAMS_: &[ParamType] = &[
         "--no-clear-screen                 Disable clearing the terminal screen on reload when --hot or --watch is enabled"
     ),
     parse_param!(
+        "--check                           Type check before running. Nothing runs if there are type errors. Alone: <b>bun check<r>"
+    ),
+    parse_param!(
         "--smol                            Use less memory, but run garbage collection more often"
     ),
     parse_param!(
@@ -280,6 +287,8 @@ const RUNTIME_PARAMS_: &[ParamType] = &[
     parse_param!(
         "--no-ffi-cc                       Throw an error if bun:ffi cc() is called (disables the C compiler)"
     ),
+    // No help text, which hides it: the name is wider than the column `bun --help` prints names in.
+    parse_param!("--disallow-code-generation-from-strings <STR>?"),
     parse_param!(
         "--unhandled-rejections <STR>      One of \"strict\", \"throw\", \"warn\", \"none\", or \"warn-with-error-code\""
     ),
@@ -370,6 +379,291 @@ pub(crate) const RUN_PARAMS: &[ParamType] = concat_params!(
     BASE_PARAMS_
 );
 
+const BAKE_DEBUG_PARAMS: &[ParamType] = &[
+    parse_param!(
+        "--debug-dump-server-files        When --app is set, dump all server files to disk even when building statically"
+    ),
+    parse_param!("--debug-no-minify                When --app is set, do not minify anything"),
+];
+macro_rules! maybe_bake_debug_params {
+    () => {
+        if FeatureFlags::BAKE_DEBUGGING_FEATURES {
+            BAKE_DEBUG_PARAMS
+        } else {
+            &[] as &[ParamType]
+        }
+    };
+}
+
+pub(crate) const BUILD_ONLY_PARAMS: &[ParamType] = concat_params!(
+    &[
+        parse_param!(
+            "--production                     Set NODE_ENV=production and enable minification"
+        ),
+        parse_param!(
+            "--compile                        Generate a standalone Bun executable containing your bundled code. Implies --production"
+        ),
+        parse_param!(
+            "--compile-exec-argv <STR>       Prepend arguments to the standalone executable's execArgv"
+        ),
+        parse_param!(
+            "--bytecode-order <STR>...        With --compile --bytecode: lay the bytecode out by order file(s) a run of the executable wrote (BUN_BYTECODE_ORDER_OUT); comma-separated or repeated, most important first"
+        ),
+        parse_param!(
+            "--compile-jit-policy <NUMBER>    JIT tier-up threshold scale the executable starts with (default 1 = normal; see Bun.unsafe.setJITPolicy)"
+        ),
+        parse_param!(
+            "--compile-autoload-dotenv        Enable autoloading of .env files in standalone executable (default: true)"
+        ),
+        parse_param!(
+            "--no-compile-autoload-dotenv     Disable autoloading of .env files in standalone executable"
+        ),
+        parse_param!(
+            "--compile-autoload-bunfig        Enable autoloading of bunfig.toml in standalone executable (default: true)"
+        ),
+        parse_param!(
+            "--no-compile-autoload-bunfig     Disable autoloading of bunfig.toml in standalone executable"
+        ),
+        parse_param!(
+            "--compile-autoload-tsconfig      Enable autoloading of tsconfig.json at runtime in standalone executable (default: false)"
+        ),
+        parse_param!(
+            "--no-compile-autoload-tsconfig   Disable autoloading of tsconfig.json at runtime in standalone executable"
+        ),
+        parse_param!(
+            "--compile-autoload-package-json  Enable autoloading of package.json at runtime in standalone executable (default: false)"
+        ),
+        parse_param!(
+            "--no-compile-autoload-package-json Disable autoloading of package.json at runtime in standalone executable"
+        ),
+        parse_param!(
+            "--compile-executable-path <STR>  Path to a Bun executable to use for cross-compilation instead of downloading"
+        ),
+        parse_param!(
+            "--asset <STR>...                 Embed a file or directory into the compiled executable, preserving its relative path (requires --compile)"
+        ),
+        parse_param!("--bytecode                       Use a bytecode cache"),
+        parse_param!(
+            "--bytecode-depth <NUMBER>        How many levels of nested functions to compile to bytecode ahead of time. Defaults to all"
+        ),
+        parse_param!(
+            "--no-optimize-bytecode           With --bytecode: skip the build-time bytecode optimization passes"
+        ),
+        parse_param!(
+            "--watch                          Automatically restart the process on file change"
+        ),
+        parse_param!(
+            "--no-clear-screen                Disable clearing the terminal screen on reload when --watch is enabled"
+        ),
+        parse_param!(
+            "--target <STR>                   The intended execution environment for the bundle. \"browser\", \"bun\" or \"node\""
+        ),
+        parse_param!("--outdir <STR>                   Default to \"dist\" if multiple files"),
+        parse_param!("--outfile <STR>                  Write to a file"),
+        parse_param!(
+            "--metafile <STR>?                Write a JSON file with metadata about the build"
+        ),
+        parse_param!(
+            "--metafile-md <STR>?             Write a markdown file with a visualization of the module graph (LLM-friendly)"
+        ),
+        parse_param!(
+            "--sourcemap <STR>?               Build with sourcemaps - 'linked', 'inline', 'external', or 'none'"
+        ),
+        parse_param!(
+            "--banner <STR>                   Add a banner to the bundled output such as \"use client\"; for a bundle being used with RSCs"
+        ),
+        parse_param!(
+            "--footer <STR>                   Add a footer to the bundled output such as // built with bun!"
+        ),
+        parse_param!(
+            "--format <STR>                   Specifies the module format to build to. \"esm\", \"cjs\" and \"iife\" are supported. Defaults to \"esm\", or \"cjs\" with --bytecode."
+        ),
+        parse_param!(
+            "--root <STR>                     Root directory used for multiple entry points"
+        ),
+        parse_param!("--splitting                      Enable code splitting"),
+        parse_param!(
+            "--no-split-require               With --splitting and --target bun: keep a require()'d ESM file in the calling chunk instead of emitting a chunk loaded at the call"
+        ),
+        parse_param!(
+            "--no-module-preload              With --splitting and --target browser: don't emit <link rel=modulepreload> for the chunks an entry or import() loads"
+        ),
+        parse_param!(
+            "--min-chunk-size <INT>           With --splitting, also fold side-effect-free chunks smaller than this many source bytes into a chunk more entry points load. Default: 0 (off); 16384 is a good value for browser builds"
+        ),
+        parse_param!(
+            "--public-path <STR>              A prefix to be appended to any import paths in bundled code"
+        ),
+        parse_param!(
+            "-e, --external <STR>...          Exclude module from transpilation (can use * wildcards). ex: -e react"
+        ),
+        parse_param!(
+            "--allow-unresolved <STR>...      Allow unresolved dynamic import()/require() specifiers matching these glob patterns. Use '\\<empty\\>' for opaque specifiers. Default is '*' (allow all)."
+        ),
+        parse_param!(
+            "--reject-unresolved              Fail the build on any dynamic import()/require() specifier that cannot be resolved at build time."
+        ),
+        parse_param!(
+            "--packages <STR>                 Add dependencies to bundle or keep them external. \"external\", \"bundle\" is supported. Defaults to \"bundle\"."
+        ),
+        parse_param!(
+            "--entry-naming <STR>             Customize entry point filenames. Defaults to \"[dir]/[name].[ext]\""
+        ),
+        parse_param!(
+            "--chunk-naming <STR>             Customize chunk filenames. Defaults to \"[name]-[hash].[ext]\""
+        ),
+        parse_param!(
+            "--asset-naming <STR>             Customize asset filenames. Defaults to \"[name]-[hash].[ext]\""
+        ),
+        parse_param!(
+            "--react-fast-refresh             Enable React Fast Refresh transform (does not emit hot-module code, use this for testing)"
+        ),
+        parse_param!(
+            "--react-compiler                 Enable the React Compiler optimizing transform"
+        ),
+        parse_param!("--no-bundle                      Transpile file only, do not bundle"),
+        parse_param!(
+            "--check                          Type check the entry points and what they import. Nothing is bundled if there are type errors"
+        ),
+        parse_param!(
+            "--emit-dce-annotations           Re-emit DCE annotations in bundles. Enabled by default unless --minify-whitespace is passed."
+        ),
+        parse_param!(
+            "--no-deprecated-namespace-object-setters  Make bundled module namespace objects getter-only (the default in a future release)"
+        ),
+        parse_param!("--minify                         Enable all minification flags"),
+        parse_param!("--minify-syntax                  Minify syntax and inline data"),
+        parse_param!("--minify-whitespace              Minify whitespace"),
+        parse_param!("--minify-identifiers             Minify identifiers"),
+        parse_param!(
+            "--keep-names                     Preserve original function and class names when minifying"
+        ),
+        parse_param!(
+            "--css-chunking                   Chunk CSS files together to reduce duplicated CSS loaded in a browser. Only has an effect when multiple entrypoints import CSS"
+        ),
+        parse_param!("--conditions <STR>...            Pass custom conditions to resolve"),
+        parse_param!(
+            "--app                            (EXPERIMENTAL) Build a web app for production using Bun Bake."
+        ),
+        parse_param!(
+            "--env <inline|prefix*|disable>   Inline environment variables into the bundle as process.env.${name}. Defaults to 'disable'. To inline environment variables matching a prefix, use my prefix like 'FOO_PUBLIC_*'."
+        ),
+        parse_param!(
+            "--windows-hide-console           When using --compile targeting Windows, prevent a Command prompt from opening alongside the executable"
+        ),
+        parse_param!(
+            "--windows-icon <STR>             When using --compile targeting Windows, assign an executable icon"
+        ),
+        parse_param!(
+            "--windows-title <STR>            When using --compile targeting Windows, set the executable product name"
+        ),
+        parse_param!(
+            "--windows-publisher <STR>        When using --compile targeting Windows, set the executable company name"
+        ),
+        parse_param!(
+            "--windows-version <STR>          When using --compile targeting Windows, set the executable version (e.g. 1.2.3.4)"
+        ),
+        parse_param!(
+            "--windows-description <STR>      When using --compile targeting Windows, set the executable description"
+        ),
+        parse_param!(
+            "--windows-copyright <STR>        When using --compile targeting Windows, set the executable copyright"
+        ),
+    ],
+    maybe_bake_debug_params!(),
+);
+const BUILD_PARAMS: &[ParamType] =
+    concat_params!(BUILD_ONLY_PARAMS, TRANSPILER_PARAMS_, BASE_PARAMS_);
+
+// TODO: update test completions
+pub(crate) const TEST_ONLY_PARAMS: &[ParamType] = &[
+    parse_param!(
+        "--no-orphans                     Exit when the parent process dies, and on exit kill every descendant."
+    ),
+    parse_param!(
+        "--timeout <NUMBER>               Set the per-test timeout in milliseconds, default is 5000."
+    ),
+    parse_param!("-u, --update-snapshots           Update snapshot files"),
+    parse_param!(
+        "--rerun-each <NUMBER>            Re-run each test file \\<NUMBER\\> times, helps catch certain bugs"
+    ),
+    parse_param!(
+        "--retry <NUMBER>                 Default retry count for all tests, overridden by per-test { retry: N }"
+    ),
+    parse_param!(
+        "--todo                           Include tests that are marked with \"test.todo()\""
+    ),
+    parse_param!(
+        "--only                           Run only tests that are marked with \"test.only()\" or \"describe.only()\""
+    ),
+    parse_param!("--pass-with-no-tests             Exit with code 0 when no tests are found"),
+    parse_param!("--concurrent                     Treat all tests as `test.concurrent()` tests"),
+    parse_param!("--randomize                      Run tests in random order"),
+    parse_param!("--seed <INT>                     Set the random seed for test randomization"),
+    parse_param!("--coverage                       Generate a coverage profile"),
+    parse_param!(
+        "--coverage-reporter <STR>...     Report coverage in 'text' and/or 'lcov'. Defaults to 'text'. Implies --coverage."
+    ),
+    parse_param!(
+        "--coverage-dir <STR>             Directory for coverage files. Defaults to 'coverage'."
+    ),
+    parse_param!(
+        "--bail <NUMBER>?                 Exit the test suite after \\<NUMBER\\> failures. If you do not specify a number, it defaults to 1."
+    ),
+    parse_param!(
+        "-t, --test-name-pattern/--grep <STR>    Run only tests with a name that matches the given regex."
+    ),
+    parse_param!(
+        "--reporter <STR>                 Test output reporter format. Available: 'junit' (requires --reporter-outfile), 'dots'. Default: console output."
+    ),
+    parse_param!(
+        "--reporter-outfile <STR>         Output file path for the reporter format (required with --reporter)."
+    ),
+    parse_param!(
+        "--dots                           Enable dots reporter. Shorthand for --reporter=dots."
+    ),
+    parse_param!(
+        "--only-failures                  Only display test failures, hiding passing tests."
+    ),
+    parse_param!(
+        "--max-concurrency <NUMBER>        Maximum number of concurrent tests to execute at once. Default is 20."
+    ),
+    parse_param!("--path-ignore-patterns <STR>...   Glob patterns for test file paths to ignore."),
+    parse_param!(
+        "--changed <STR>?                 Only run test files affected by changed files according to git. Optionally pass a commit or branch to compare against."
+    ),
+    parse_param!(
+        "--isolate                        Run each test file in a fresh global object. Leaked handles from one file cannot affect another."
+    ),
+    parse_param!(
+        "--no-isolate                     With --parallel: let each worker keep one global and module registry across the files it runs (faster; files can see each other's leftovers)."
+    ),
+    parse_param!(
+        "--parallel <NUMBER>?             Run test files in parallel using N worker processes. Implies --isolate. Defaults to CPU core count."
+    ),
+    parse_param!(
+        "--parallel-delay <NUMBER>        Milliseconds the first --parallel worker must be busy before spawning the rest. 0 spawns all immediately. Default 5."
+    ),
+    parse_param!(
+        "--test-worker                    (internal) Run as a --parallel worker, receiving files over IPC."
+    ),
+    parse_param!(
+        "--shard <STR>                    Run a subset of test files, e.g. '--shard=1/3' runs the first of three shards. Useful for splitting tests across multiple CI jobs."
+    ),
+    parse_param!(
+        "--timings <STR>...               JSON file(s) of per-file durations (ms); several are merged, e.g. one per CI shard. Balances --shard by total time and makes --parallel start the slowest files first."
+    ),
+    parse_param!(
+        "--update-timings                 After the run, write measured per-file durations to the first --timings file (only this shard's files under --shard; merged with what was read otherwise)."
+    ),
+];
+const TEST_PARAMS: &[ParamType] = concat_params!(
+    TEST_ONLY_PARAMS,
+    RUNTIME_PARAMS_,
+    TRANSPILER_PARAMS_,
+    BASE_PARAMS_
+);
+
 /// Fallback table for `Command::tag_params`.
 const BASE_RUNTIME_TRANSPILER_PARAMS: &[ParamType] =
     concat_params!(BASE_PARAMS_, RUNTIME_PARAMS_, TRANSPILER_PARAMS_);
@@ -404,6 +698,8 @@ const BASE_RUNTIME_TRANSPILER_PARAMS: &[ParamType] =
 )]
 pub(crate) static AUTO_TABLE: &clap::ConvertedTable = clap::comptime_table!(AUTO_PARAMS);
 pub(crate) static RUN_TABLE: &clap::ConvertedTable = clap::comptime_table!(RUN_PARAMS, cold);
+pub(crate) static BUILD_TABLE: &clap::ConvertedTable = clap::comptime_table!(BUILD_PARAMS, cold);
+pub(crate) static TEST_TABLE: &clap::ConvertedTable = clap::comptime_table!(TEST_PARAMS, cold);
 static BASE_RUNTIME_TRANSPILER_TABLE: &clap::ConvertedTable =
     clap::comptime_table!(BASE_RUNTIME_TRANSPILER_PARAMS, cold);
 
@@ -415,6 +711,9 @@ fn tag_table(cmd: CommandTag) -> &'static clap::ConvertedTable {
     match cmd {
         CommandTag::AutoCommand => AUTO_TABLE,
         CommandTag::RunCommand | CommandTag::RunAsNodeCommand => RUN_TABLE,
+        CommandTag::BuildCommand => BUILD_TABLE,
+        CommandTag::TestCommand => TEST_TABLE,
+        CommandTag::BunxCommand => RUN_TABLE,
         _ => BASE_RUNTIME_TRANSPILER_TABLE,
     }
 }
@@ -465,30 +764,52 @@ fn replace_pid_placeholder(name: &[u8]) -> Box<[u8]> {
     out.into_boxed_slice()
 }
 
-#[repr(u8)]
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub(crate) enum BunCAStore {
-    Bundled,
-    Openssl,
-    System,
+use bun_core::Global::Bun__Node__UseSystemCA;
+
+pub(crate) fn get_use_system_ca() -> bool {
+    Bun__Node__UseSystemCA.load(core::sync::atomic::Ordering::Relaxed)
 }
-#[unsafe(no_mangle)]
-static Bun__Node__CAStore: core::sync::atomic::AtomicU8 =
-    core::sync::atomic::AtomicU8::new(BunCAStore::Bundled as u8);
-#[unsafe(no_mangle)]
-pub(crate) static Bun__Node__UseSystemCA: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
 
 // ─── bunfig loading ──────────────────────────────────────────────────────────
 // their private helpers moved to `bun_bunfig::arguments` so `bun_install` can
 // call them without a tier-6 dependency. Re-export here so existing
 // `crate::cli::arguments::load_config*` callers are unaffected.
-pub use bun_bunfig::arguments::{load_config_path, load_config_with_cmd_args};
+pub(crate) use bun_bunfig::arguments::{load_config_path, load_config_with_cmd_args};
 
 /// node aliases `-pe` to `--print --eval` as a whole token (node_options.cc):
 /// it can't be a short in either runtime, being ambiguous with `-p` carrying
 /// the attached value `e`. Bun's `-p` takes the code, so `-pe X` is `-p X`.
-pub const NODE_SHORT_ALIASES: &[(&[u8], &[u8])] = &[(b"-pe", b"-p")];
+pub(crate) const NODE_SHORT_ALIASES: &[(&[u8], &[u8])] = &[(b"-pe", b"-p")];
+
+/// `--disallow-code-generation-from-strings[=<value>]`. Raises the process's level; never lowers it.
+fn disallow_code_generation_from_strings(value: &[u8]) {
+    match bun_core::CodeGenerationFromStrings::from_flag_value(value) {
+        Some(level) => bun_core::disallow_code_generation_from_strings(level),
+        None => {
+            Output::err_generic(
+                "Invalid value for --disallow-code-generation-from-strings: \"{}\". Must be \"strict\", or no value\n",
+                format_args!("{}", BStr::new(value)),
+            );
+            Global::exit(1);
+        }
+    }
+}
+
+/// The level a compiled executable was built with (`--compile-exec-argv`) is a floor. The parser
+/// keeps an option's last value and reads `BUN_OPTIONS` after the embedded flags, so on its own it
+/// would let the environment lower it. `embedded` is the embedded flags as the parser is given them.
+pub(crate) fn disallow_code_generation_from_strings_as_compiled(embedded: &[&bun_core::ZStr]) {
+    for token in embedded {
+        match token
+            .as_bytes()
+            .strip_prefix(b"--disallow-code-generation-from-strings".as_slice())
+        {
+            Some(b"") => disallow_code_generation_from_strings(b""),
+            Some([b'=', value @ ..]) => disallow_code_generation_from_strings(value),
+            _ => {}
+        }
+    }
+}
 
 /// Parse `argv` into `api::TransformOptions` for the given subcommand.
 ///
@@ -513,6 +834,7 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
                 CommandTag::AutoCommand | CommandTag::RunAsNodeCommand => NODE_SHORT_ALIASES,
                 _ => &[],
             },
+            ..Default::default()
         },
     ) {
         Ok(a) => a,
@@ -590,7 +912,10 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
     // Not gated on .BunxCommand: bunx skips Arguments.parse entirely
     // (uses_global_options=false). bunx picks up no-orphans via the
     // BUN_FEATURE_FLAG_NO_ORPHANS env var in main()→install() instead.
-    if matches!(cmd, CommandTag::RunCommand | CommandTag::AutoCommand) {
+    if matches!(
+        cmd,
+        CommandTag::RunCommand | CommandTag::AutoCommand | CommandTag::TestCommand
+    ) {
         if args.flag(b"--no-orphans") {
             bun_io::parent_death_watchdog::enable();
         }
@@ -603,6 +928,9 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
         ctx.parallel = args.flag(b"--parallel");
         ctx.sequential = args.flag(b"--sequential");
         ctx.no_exit_on_error = args.flag(b"--no-exit-on-error");
+        // Set before bunfig.toml is loaded so that `--silent` hides the warning about an unreadable
+        // bunfig.toml. It is set again below so that the flag overrides `run.silent`.
+        ctx.debug.silent = args.flag(b"--silent");
 
         if let Some(elide_lines) = args.option(b"--elide-lines") {
             if !elide_lines.is_empty() {
@@ -620,6 +948,11 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
             }
         }
     }
+
+    if cmd == CommandTag::TestCommand {
+        parse_test_command_options(&args, ctx);
+    }
+
     ctx.args.absolute_working_dir = Some(cwd);
     ctx.positionals = slice_to_owned(args.positionals());
 
@@ -699,7 +1032,13 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
 
     ctx.passthrough = slice_to_owned(args.remaining());
 
-    if matches!(cmd, CommandTag::AutoCommand | CommandTag::RunCommand) {
+    if matches!(
+        cmd,
+        CommandTag::AutoCommand
+            | CommandTag::RunCommand
+            | CommandTag::BuildCommand
+            | CommandTag::TestCommand
+    ) {
         if !args.options(b"--conditions").is_empty() {
             opts.conditions = slice_to_owned(args.options(b"--conditions"));
         }
@@ -708,7 +1047,10 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
     // runtime commands
     if matches!(
         cmd,
-        CommandTag::AutoCommand | CommandTag::RunCommand | CommandTag::RunAsNodeCommand
+        CommandTag::AutoCommand
+            | CommandTag::RunCommand
+            | CommandTag::TestCommand
+            | CommandTag::RunAsNodeCommand
     ) {
         {
             let preloads = args.options(b"--preload");
@@ -744,9 +1086,6 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
 
         if args.flag(b"--hot") {
             ctx.debug.hot_reload = HotReload::Hot;
-            if args.flag(b"--no-clear-screen") {
-                let _ = bun_dotenv::HAS_NO_CLEAR_SCREEN_CLI_FLAG.set(true);
-            }
         } else if args.flag(b"--watch") {
             ctx.debug.hot_reload = HotReload::Watch;
 
@@ -756,35 +1095,17 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
             {
                 bun_core::set_auto_reload_on_crash(true);
             }
-
-            if args.flag(b"--no-clear-screen") {
-                let _ = bun_dotenv::HAS_NO_CLEAR_SCREEN_CLI_FLAG.set(true);
-            }
         }
-
-        if let Some(kill_signal) = args.option(b"--watch-kill-signal") {
-            // Node reads --watch-kill-signal only in watch mode; elsewhere it is
-            // accepted and ignored. Matching is case-insensitive (node uppercases).
-            if ctx.debug.hot_reload == HotReload::Watch {
-                let upper = kill_signal.to_ascii_uppercase();
-                match bun_core::SignalCode::from_name(&upper)
-                    .filter(|s| s.platform_number().is_some())
-                {
-                    Some(sig) => ctx.debug.watch_kill_signal = sig,
-                    None => {
-                        Output::print_errorln(format_args!(
-                            "TypeError [ERR_UNKNOWN_SIGNAL]: Unknown signal: {}",
-                            bstr::BStr::new(kill_signal)
-                        ));
-                        Output::flush();
-                        Global::exit(1);
-                    }
-                }
-            }
-        }
+        ctx.debug.no_clear_screen = args.flag(b"--no-clear-screen");
+        ctx.debug.watch_flag = args.flag(b"--watch");
+        ctx.debug.watch_kill_signal_arg = args.option(b"--watch-kill-signal").map(Into::into);
 
         if let Some(origin) = args.option(b"--origin") {
             opts.origin = Some(origin.into());
+        }
+
+        if args.flag(b"--redis-preconnect") {
+            ctx.runtime_options.redis_preconnect = true;
         }
 
         if args.flag(b"--sql-preconnect") {
@@ -799,6 +1120,10 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
 
         if args.flag(b"--no-ffi-cc") {
             opts.allow_ffi_cc = Some(false);
+        }
+
+        if let Some(value) = args.option(b"--disallow-code-generation-from-strings") {
+            disallow_code_generation_from_strings(value);
         }
 
         if let Some(unhandled_rejections) = args.option(b"--unhandled-rejections") {
@@ -860,18 +1185,26 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
         }
 
         if let Some(user_agent) = args.option(b"--user-agent") {
+            if bun_http::async_http::breaks_header_line(user_agent) {
+                Output::err_generic(
+                    "Invalid value for --user-agent: must not contain a newline or NUL byte",
+                    (),
+                );
+                Global::exit(1);
+            }
             // argv slices returned by `clap::Args::option` borrow
             // process-lifetime `argv` storage.
             let _ = bun_http::OVERRIDDEN_DEFAULT_USER_AGENT.set(user_agent);
         }
 
-        ctx.debug.offline_mode_setting = Some(if args.flag(b"--prefer-offline") {
-            bun_options_types::offline_mode::OfflineMode::Offline
+        // Without a flag, `install.prefer` from bunfig.toml is kept.
+        if args.flag(b"--prefer-offline") {
+            ctx.debug.offline_mode_setting =
+                Some(bun_options_types::offline_mode::OfflineMode::Offline);
         } else if args.flag(b"--prefer-latest") {
-            bun_options_types::offline_mode::OfflineMode::Latest
-        } else {
-            bun_options_types::offline_mode::OfflineMode::Online
-        });
+            ctx.debug.offline_mode_setting =
+                Some(bun_options_types::offline_mode::OfflineMode::Latest);
+        }
 
         if args.flag(b"--no-install") {
             ctx.debug.global_cache = options::GlobalCache::disable;
@@ -903,6 +1236,14 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
         }
         ctx.runtime_options.if_present = args.flag(b"--if-present");
         ctx.runtime_options.smol = args.flag(b"--smol");
+        // To `node`, `--check` means something else.
+        ctx.runtime_options.check = args.flag(b"--check") && cmd != CommandTag::RunAsNodeCommand;
+        // Decided here: on Windows the process that starts it again is set up right after this.
+        if ctx.runtime_options.check {
+            super::watch_instead_of_hot_for_check(ctx);
+        }
+        let restarts = ctx.debug.hot_reload == HotReload::Watch;
+        super::apply_watch_mode_flags(ctx, restarts);
         // node's `-i` is an alias for --interactive; elsewhere `-i` is --install=fallback.
         ctx.runtime_options.interactive = args.flag(b"--interactive")
             || (cmd == CommandTag::RunAsNodeCommand && args.flag(b"-i"));
@@ -915,8 +1256,7 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
             // sets (VirtualMachine::configure_from_env): allows resolving
             // `bun:internal-for-testing` / `internal/test/binding` in release
             // builds. Debug builds always allow them.
-            bun_jsc::module_loader::IS_ALLOWED_TO_USE_INTERNAL_TESTING_APIS
-                .store(true, core::sync::atomic::Ordering::Relaxed);
+            bun_jsc::module_loader::set_is_allowed_to_use_internal_testing_apis(true);
             bun_resolve_builtins::set_expose_internals_enabled(true);
         }
 
@@ -1152,43 +1492,7 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
         if args.flag(b"--zero-fill-buffers") {
             Bun__Node__ZeroFillBuffers.store(true, core::sync::atomic::Ordering::Relaxed);
         }
-        let use_system_ca = args.flag(b"--use-system-ca");
-        let use_openssl_ca = args.flag(b"--use-openssl-ca");
-        let use_bundled_ca = args.flag(b"--use-bundled-ca");
-
-        // Disallow any combination > 1
-        if (use_system_ca as u8) + (use_openssl_ca as u8) + (use_bundled_ca as u8) > 1 {
-            bun_core::pretty_errorln!(
-                "<r><red>error<r>: choose exactly one of --use-system-ca, --use-openssl-ca, or --use-bundled-ca"
-            );
-            Global::exit(1);
-        }
-
-        // CLI overrides env var (NODE_USE_SYSTEM_CA)
-        let store: Option<BunCAStore> = if use_bundled_ca {
-            Some(BunCAStore::Bundled)
-        } else if use_openssl_ca {
-            Some(BunCAStore::Openssl)
-        } else if use_system_ca || env_var::NODE_USE_SYSTEM_CA.get().unwrap_or(false) {
-            Some(BunCAStore::System)
-        } else {
-            // No CA flag — leave the FFI default (Bundled) in place. Avoids a
-            // `transmute<u8, BunCAStore>` round-trip through the atomic, which
-            // would be UB on an out-of-range discriminant.
-            None
-        };
-        if let Some(store) = store {
-            Bun__Node__CAStore.store(store as u8, core::sync::atomic::Ordering::Relaxed);
-            // Back-compat boolean used by native code until fully migrated
-            Bun__Node__UseSystemCA.store(
-                store == BunCAStore::System,
-                core::sync::atomic::Ordering::Relaxed,
-            );
-        } else {
-            // `Bun__Node__UseSystemCA` is written unconditionally,
-            // even when no CA flag/env was supplied (default bundled ⇒ false).
-            Bun__Node__UseSystemCA.store(false, core::sync::atomic::Ordering::Relaxed);
-        }
+        Global::set_ca_store_from_flags(|flag| args.flag(flag));
 
         if args.flag(b"--tls-min-v1.3") && args.flag(b"--tls-max-v1.2") {
             bun_core::pretty_errorln!(
@@ -1210,18 +1514,40 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
 
     ctx.bundler_options.ignore_dce_annotations = args.flag(b"--ignore-dce-annotations");
 
-if opts.entry_points.is_empty() {
-           let mut entry_points: &[Box<[u8]>] = &ctx.positionals;
+    if cmd == CommandTag::BuildCommand {
+        parse_build_command_options(cmd, &args, &mut opts, ctx, &mut diag);
+    }
 
-           if cmd == CommandTag::RunCommand
-               && !entry_points.is_empty()
-               && (&*entry_points[0] == b"run" || &*entry_points[0] == b"r")
-           {
-               entry_points = &entry_points[1..];
-           }
+    if opts.entry_points.is_empty() {
+        let mut entry_points: &[Box<[u8]>] = &ctx.positionals;
 
-           opts.entry_points = entry_points.to_vec();
-       }
+        match cmd {
+            CommandTag::BuildCommand => {
+                if !entry_points.is_empty()
+                    && (&*entry_points[0] == b"build" || &*entry_points[0] == b"bun")
+                {
+                    let mut out_entry = &entry_points[1..];
+                    for (i, entry) in entry_points.iter().enumerate() {
+                        if !entry.is_empty() {
+                            out_entry = &out_entry[i..];
+                            break;
+                        }
+                    }
+                    entry_points = out_entry;
+                }
+            }
+            CommandTag::RunCommand => {
+                if !entry_points.is_empty()
+                    && (&*entry_points[0] == b"run" || &*entry_points[0] == b"r")
+                {
+                    entry_points = &entry_points[1..];
+                }
+            }
+            _ => {}
+        }
+
+        opts.entry_points = entry_points.to_vec();
+    }
 
     let jsx_factory = args.option(b"--jsx-factory");
     let jsx_fragment = args.option(b"--jsx-fragment");
@@ -1252,7 +1578,10 @@ if opts.entry_points.is_empty() {
         }
     }
 
-    if matches!(cmd, CommandTag::RunCommand | CommandTag::AutoCommand) {
+    if matches!(
+        cmd,
+        CommandTag::RunCommand | CommandTag::AutoCommand | CommandTag::BunxCommand
+    ) {
         // "run.bun" in bunfig.toml
         if args.flag(b"--bun") {
             ctx.debug.run_in_bun = true;
@@ -1296,6 +1625,39 @@ if opts.entry_points.is_empty() {
                 development: false,
                 side_effects: jsx_side_effects,
             });
+        }
+    }
+
+    if cmd == CommandTag::BuildCommand {
+        if opts.entry_points.is_empty() && !ctx.bundler_options.bake {
+            bun_core::prettyln!(
+                "<r><b>bun build <r><d>v{}<r>",
+                bun_core::Global::package_json_version_with_sha
+            );
+            bun_core::pretty!(
+                "<r><red>error: Missing entrypoints. What would you like to bundle?<r>\n\n"
+            );
+            Output::flush();
+            bun_core::pretty!(
+                "Usage:\n  <d>$<r> <b><green>bun build<r> \\<entrypoint\\> [...\\<entrypoints\\>] <cyan>[...flags]<r>  \n"
+            );
+            bun_core::pretty!(
+                "\nTo see full documentation:\n  <d>$<r> <b><green>bun build<r> --help\n"
+            );
+            Output::flush();
+            Global::exit(1);
+        }
+
+        if args.flag(b"--production") {
+            let any_html = opts
+                .entry_points
+                .iter()
+                .any(|entry_point| strings::has_suffix_comptime(entry_point, b".html"));
+            if any_html {
+                ctx.bundler_options.css_chunking = true;
+            }
+
+            ctx.bundler_options.production = true;
         }
     }
 
@@ -1348,3 +1710,965 @@ if opts.entry_points.is_empty() {
     Ok(opts)
 }
 
+/// Cold path: `bun test` option-group parsing — timeout / coverage / reporter /
+/// shard / parallel / seed / etc. Split out of [`parse`] so the `bun run <script>`
+/// and bare-`bun <file>` hot path (`USES_GLOBAL_OPTIONS` ⇒ `parse` runs on every
+/// invocation) doesn't carry the test-runner flag handling in its instruction pages.
+#[cold]
+#[inline(never)]
+fn parse_test_command_options(args: &clap::Args<clap::Help>, ctx: Context<'_>) {
+    if let Some(timeout_ms) = args.option(b"--timeout") {
+        if !timeout_ms.is_empty() {
+            ctx.test_options.default_timeout_ms = match strings::parse_int::<u32>(timeout_ms, 10) {
+                Ok(v) => v,
+                Err(_) => {
+                    bun_core::pretty_errorln!(
+                        "<r><red>error<r>: Invalid timeout: \"{}\"",
+                        BStr::new(timeout_ms)
+                    );
+                    Output::flush();
+                    Global::exit(1);
+                }
+            };
+        }
+    }
+
+    if let Some(max_concurrency) = args.option(b"--max-concurrency") {
+        if !max_concurrency.is_empty() {
+            ctx.test_options.max_concurrency = match strings::parse_int::<u32>(max_concurrency, 10)
+            {
+                Ok(v) => v,
+                Err(_) => {
+                    bun_core::pretty_errorln!(
+                        "<r><red>error<r>: Invalid max-concurrency: \"{}\"",
+                        BStr::new(max_concurrency)
+                    );
+                    Global::exit(1);
+                }
+            };
+        }
+    }
+
+    if !ctx.test_options.coverage.enabled {
+        ctx.test_options.coverage.enabled = args.flag(b"--coverage");
+    }
+
+    if !args.options(b"--coverage-reporter").is_empty() {
+        ctx.test_options.coverage.enabled = true;
+        ctx.test_options.coverage.reporters = CoverageReporters {
+            text: false,
+            lcov: false,
+        };
+        for reporter in args.options(b"--coverage-reporter") {
+            if *reporter == b"text" {
+                ctx.test_options.coverage.reporters.text = true;
+            } else if *reporter == b"lcov" {
+                ctx.test_options.coverage.reporters.lcov = true;
+            } else {
+                bun_core::pretty_errorln!(
+                    "<r><red>error<r>: invalid coverage reporter '{}'. Available options: 'text' (console output), 'lcov' (code coverage file)",
+                    BStr::new(reporter)
+                );
+                Global::exit(1);
+            }
+        }
+    }
+
+    if let Some(reporter_outfile) = args.option(b"--reporter-outfile") {
+        ctx.test_options.reporter_outfile = Some(reporter_outfile.into());
+    }
+
+    if let Some(reporter) = args.option(b"--reporter") {
+        if reporter == b"junit" {
+            // A `--parallel` worker only collects for the coordinator's file.
+            if ctx.test_options.reporter_outfile.is_none() && !args.flag(b"--test-worker") {
+                Output::err_generic(
+                    "--reporter=junit requires --reporter-outfile [file] to specify where to save the XML report",
+                    (),
+                );
+                Global::crash();
+            }
+            ctx.test_options.reporters.junit = true;
+        } else if reporter == b"dots" || reporter == b"dot" {
+            ctx.test_options.reporters.dots = true;
+        } else {
+            Output::err_generic(
+                "unsupported reporter format '{}'. Available options: 'junit' (for XML test results), 'dots'",
+                format_args!("{}", BStr::new(reporter)),
+            );
+            Global::crash();
+        }
+    }
+
+    // Handle --dots flag as shorthand for --reporter=dots
+    if args.flag(b"--dots") {
+        ctx.test_options.reporters.dots = true;
+    }
+
+    // Handle --only-failures flag
+    if args.flag(b"--only-failures") {
+        ctx.test_options.reporters.only_failures = true;
+    }
+
+    if let Some(dir) = args.option(b"--coverage-dir") {
+        ctx.test_options.coverage.reports_directory = Box::<[u8]>::from(dir);
+    }
+
+    if !args.options(b"--path-ignore-patterns").is_empty() {
+        ctx.test_options.path_ignore_patterns =
+            slice_to_owned(args.options(b"--path-ignore-patterns"));
+        ctx.test_options.path_ignore_patterns_from_cli = true;
+    }
+
+    if let Some(bail) = args.option(b"--bail") {
+        if !bail.is_empty() {
+            ctx.test_options.bail = match strings::parse_int::<u32>(bail, 10) {
+                Ok(v) => v,
+                Err(e) => {
+                    bun_core::pretty_errorln!("<r><red>error<r>: --bail expects a number: {:?}", e);
+                    Output::flush();
+                    Global::exit(1);
+                }
+            };
+
+            if ctx.test_options.bail == 0 {
+                bun_core::pretty_errorln!(
+                    "<r><red>error<r>: --bail expects a number greater than 0"
+                );
+                Output::flush();
+                Global::exit(1);
+            }
+        } else {
+            ctx.test_options.bail = 1;
+        }
+    }
+    if let Some(repeat_count) = args.option(b"--rerun-each") {
+        if !repeat_count.is_empty() {
+            ctx.test_options.repeat_count = match strings::parse_int::<u32>(repeat_count, 10) {
+                Ok(v) => v,
+                Err(e) => {
+                    bun_core::pretty_errorln!(
+                        "<r><red>error<r>: --rerun-each expects a number: {:?}",
+                        e
+                    );
+                    Global::exit(1);
+                }
+            };
+        }
+    }
+    if let Some(retry_count) = args.option(b"--retry") {
+        if !retry_count.is_empty() {
+            ctx.test_options.retry = match strings::parse_int::<u32>(retry_count, 10) {
+                Ok(v) => v,
+                Err(e) => {
+                    bun_core::pretty_errorln!(
+                        "<r><red>error<r>: --retry expects a number: {:?}",
+                        e
+                    );
+                    Global::exit(1);
+                }
+            };
+        }
+    }
+    if ctx.test_options.retry != 0 && ctx.test_options.repeat_count != 0 {
+        bun_core::pretty_errorln!("<r><red>error<r>: --retry cannot be used with --rerun-each");
+        Global::exit(1);
+    }
+    if let Some(name_pattern) = args.option(b"--test-name-pattern") {
+        ctx.test_options.test_filter_pattern = Some(name_pattern.into());
+        let regex = match RegularExpression::init(
+            &bun_core::String::from_bytes(name_pattern),
+            RegexFlags::None,
+        ) {
+            Ok(r) => r,
+            Err(_) => {
+                bun_core::pretty_errorln!(
+                    "<r><red>error<r>: --test-name-pattern expects a valid regular expression but received {}",
+                    bun_core::fmt::QuotedFormatter { text: name_pattern },
+                );
+                Global::exit(1);
+            }
+        };
+        // The compiled regex lives in `bun_jsc::RegularExpression` (T6); the
+        // T3 `TestOptions` field is type-erased to `NonNull<()>` to break the
+        // back-edge. High tier owns construction/destruction.
+        ctx.test_options.test_filter_regex = core::ptr::NonNull::new(regex.cast::<()>());
+    }
+    if let Some(since) = args.option(b"--changed") {
+        ctx.test_options.changed = Some(since.into());
+    }
+    if let Some(shard) = args.option(b"--shard") {
+        let Some(sep) = strings::index_of_char(shard, b'/') else {
+            bun_core::pretty_errorln!(
+                "<r><red>error<r>: --shard expects <d>'<r>index/count<d>'<r>, e.g. --shard=1/3"
+            );
+            Global::exit(1);
+        };
+        let sep = sep as usize;
+        let index_str = &shard[..sep];
+        let count_str = &shard[sep + 1..];
+        let index = match strings::parse_int::<u32>(index_str, 10) {
+            Ok(v) => v,
+            Err(_) => {
+                bun_core::pretty_errorln!(
+                    "<r><red>error<r>: --shard index must be a positive integer, got \"{}\"",
+                    BStr::new(index_str)
+                );
+                Global::exit(1);
+            }
+        };
+        let count = match strings::parse_int::<u32>(count_str, 10) {
+            Ok(v) => v,
+            Err(_) => {
+                bun_core::pretty_errorln!(
+                    "<r><red>error<r>: --shard count must be a positive integer, got \"{}\"",
+                    BStr::new(count_str)
+                );
+                Global::exit(1);
+            }
+        };
+        if count == 0 {
+            bun_core::pretty_errorln!("<r><red>error<r>: --shard count must be greater than 0");
+            Global::exit(1);
+        }
+        if index == 0 || index > count {
+            bun_core::pretty_errorln!(
+                "<r><red>error<r>: --shard index must be between 1 and {}, got {}",
+                count,
+                index
+            );
+            Global::exit(1);
+        }
+        ctx.test_options.shard = Some(Shard { index, count });
+    }
+    for path in args.options(b"--timings") {
+        if path.is_empty() {
+            bun_core::pretty_errorln!("<r><red>error<r>: --timings expects a file path");
+            Global::exit(1);
+        }
+        if !ctx.test_options.timings_files.iter().any(|p| &**p == *path) {
+            ctx.test_options.timings_files.push((*path).into());
+        }
+    }
+    ctx.test_options.update_timings = args.flag(b"--update-timings");
+    if ctx.test_options.update_timings && ctx.test_options.timings_files.is_empty() {
+        bun_core::pretty_errorln!(
+            "<r><red>error<r>: --update-timings requires --timings, e.g. --timings=.bun-test-timings.json --update-timings"
+        );
+        Global::exit(1);
+    }
+    ctx.test_options.update_snapshots = args.flag(b"--update-snapshots");
+    ctx.test_options.run_todo = args.flag(b"--todo");
+    ctx.test_options.only = args.flag(b"--only");
+    ctx.test_options.pass_with_no_tests = args.flag(b"--pass-with-no-tests");
+    ctx.test_options.concurrent = args.flag(b"--concurrent");
+    ctx.test_options.randomize = args.flag(b"--randomize");
+    let no_isolate = args.flag(b"--no-isolate");
+    ctx.test_options.isolate = args.flag(b"--isolate") && !no_isolate;
+    ctx.test_options.test_worker = args.flag(b"--test-worker");
+
+    if let Some(parallel_str) = args.option(b"--parallel") {
+        let parsed: u32 = if !parallel_str.is_empty() {
+            match strings::parse_int::<u32>(parallel_str, 10) {
+                Ok(v) => v,
+                Err(_) => {
+                    bun_core::pretty_errorln!(
+                        "<red>error<r>: --parallel expects a positive integer, received \"{}\"",
+                        BStr::new(parallel_str)
+                    );
+                    Global::exit(1);
+                }
+            }
+        } else {
+            u32::from(bun_core::get_thread_count().max(1))
+        };
+        if parsed == 0 {
+            bun_core::pretty_errorln!(
+                "<red>error<r>: --parallel expects a positive integer, received \"0\""
+            );
+            Global::exit(1);
+        }
+        ctx.test_options.parallel = parsed;
+        ctx.test_options.isolate = !no_isolate;
+    }
+
+    if let Some(delay_str) = args.option(b"--parallel-delay") {
+        ctx.test_options.parallel_delay_ms = match strings::parse_int::<u32>(delay_str, 10) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                bun_core::pretty_errorln!(
+                    "<red>error<r>: --parallel-delay expects a non-negative integer (milliseconds), received \"{}\"",
+                    BStr::new(delay_str)
+                );
+                Global::exit(1);
+            }
+        };
+    }
+
+    if let Some(seed_str) = args.option(b"--seed") {
+        ctx.test_options.randomize = true;
+        ctx.test_options.seed = match strings::parse_int::<u32>(seed_str, 10) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                bun_core::pretty_errorln!(
+                    "<red>error<r>: Invalid seed value: {}",
+                    BStr::new(seed_str)
+                );
+                Global::exit(1);
+            }
+        };
+    }
+}
+
+/// Cold path: `bun build` option-group parsing — bundler flags, `--app` (Bake),
+/// `--compile` / `CompileTarget`, sourcemap / format / minify, Windows executable
+/// metadata, etc. Split out of [`parse`] for the same reason as
+/// [`parse_test_command_options`].
+#[cold]
+#[inline(never)]
+fn parse_build_command_options(
+    cmd: CommandTag,
+    args: &clap::Args<clap::Help>,
+    opts: &mut api::TransformOptions,
+    ctx: Context<'_>,
+    diag: &mut clap::Diagnostic,
+) {
+    ctx.bundler_options.transform_only = args.flag(b"--no-bundle");
+    ctx.bundler_options.check = args.flag(b"--check");
+    ctx.bundler_options.bytecode = args.flag(b"--bytecode");
+    if let Some(depth) = args.option(b"--bytecode-depth") {
+        ctx.bundler_options.bytecode_depth = match strings::parse_int::<u32>(depth, 10) {
+            Ok(v) => v,
+            Err(_) => {
+                Output::err_generic(
+                    "Invalid value for --bytecode-depth: \"{}\". Must be a non-negative integer\n",
+                    format_args!("{}", BStr::new(depth)),
+                );
+                Global::exit(1);
+            }
+        };
+    }
+
+    let production = args.flag(b"--production");
+
+    if args.flag(b"--app") {
+        if !FeatureFlags::bake() {
+            Output::err_generic(
+                "To use the experimental \"--app\" option, upgrade to the canary build of bun via \"bun upgrade --canary\"",
+                (),
+            );
+            Global::crash();
+        }
+
+        ctx.bundler_options.bake = true;
+        ctx.bundler_options.bake_debug_dump_server =
+            FeatureFlags::BAKE_DEBUGGING_FEATURES && args.flag(b"--debug-dump-server-files");
+        ctx.bundler_options.bake_debug_disable_minify =
+            FeatureFlags::BAKE_DEBUGGING_FEATURES && args.flag(b"--debug-no-minify");
+    }
+
+    ctx.bundler_options.optimize_bytecode = !args.flag(b"--no-optimize-bytecode");
+
+    if ctx.bundler_options.bytecode {
+        ctx.bundler_options.output_format = options::Format::Cjs;
+        ctx.args.target = Some(api::Target::Bun);
+    }
+
+    if let Some(public_path) = args.option(b"--public-path") {
+        ctx.bundler_options.public_path = public_path.into();
+    }
+
+    if let Some(banner) = args.option(b"--banner") {
+        ctx.bundler_options.banner = banner.into();
+    }
+
+    if let Some(footer) = args.option(b"--footer") {
+        ctx.bundler_options.footer = footer.into();
+    }
+
+    let minify_flag = args.flag(b"--minify") || production;
+    ctx.bundler_options.minify_syntax = minify_flag || args.flag(b"--minify-syntax");
+    ctx.bundler_options.minify_whitespace = minify_flag || args.flag(b"--minify-whitespace");
+    ctx.bundler_options.minify_identifiers = minify_flag || args.flag(b"--minify-identifiers");
+    ctx.bundler_options.keep_names = args.flag(b"--keep-names");
+
+    ctx.bundler_options.css_chunking = args.flag(b"--css-chunking");
+
+    ctx.bundler_options.emit_dce_annotations =
+        args.flag(b"--emit-dce-annotations") || !ctx.bundler_options.minify_whitespace;
+    ctx.bundler_options.deprecated_namespace_object_setters =
+        !args.flag(b"--no-deprecated-namespace-object-setters");
+
+    if !args.options(b"--external").is_empty() {
+        opts.external = slice_to_owned(args.options(b"--external"));
+    }
+
+    if args.flag(b"--reject-unresolved") && !args.options(b"--allow-unresolved").is_empty() {
+        bun_core::pretty_errorln!(
+            "<r><red>error<r>: --reject-unresolved and --allow-unresolved cannot be used together"
+        );
+        Global::crash();
+    } else if args.flag(b"--reject-unresolved") {
+        ctx.bundler_options.allow_unresolved = Some(Vec::new());
+    } else if !args.options(b"--allow-unresolved").is_empty() {
+        let raw = args.options(b"--allow-unresolved");
+        let mut allow: Vec<Box<[u8]>> = Vec::with_capacity(raw.len());
+        for val in raw {
+            // "<empty>" sentinel represents the empty-string pattern (for matching opaque specifiers)
+            allow.push(Box::<[u8]>::from(if *val == b"<empty>" {
+                b"".as_slice()
+            } else {
+                *val
+            }));
+        }
+        ctx.bundler_options.allow_unresolved = Some(allow);
+    }
+
+    if let Some(packages) = args.option(b"--packages") {
+        if packages == b"bundle" {
+            opts.packages = Some(api::PackagesMode::Bundle);
+        } else if packages == b"external" {
+            opts.packages = Some(api::PackagesMode::External);
+        } else {
+            bun_core::pretty_errorln!(
+                "<r><red>error<r>: Invalid packages setting: \"{}\"",
+                BStr::new(packages)
+            );
+            Global::crash();
+        }
+    }
+
+    if let Some(env) = args.option(b"--env") {
+        if let Some(asterisk) = strings::index_of_char(env, b'*') {
+            if asterisk == 0 {
+                ctx.bundler_options.env_behavior = options::EnvBehavior::LoadAll;
+            } else {
+                ctx.bundler_options.env_behavior = options::EnvBehavior::Prefix;
+                ctx.bundler_options.env_prefix = Box::<[u8]>::from(&env[..asterisk as usize]);
+            }
+        } else if env == b"inline" || env == b"1" {
+            ctx.bundler_options.env_behavior = options::EnvBehavior::LoadAll;
+        } else if env == b"disable" || env == b"0" {
+            ctx.bundler_options.env_behavior = options::EnvBehavior::LoadAllWithoutInlining;
+        } else {
+            bun_core::pretty_errorln!(
+                "<r><red>error<r>: Expected 'env' to be 'inline', 'disable', or a prefix with a '*' character"
+            );
+            Global::crash();
+        }
+    }
+
+    if let Some(target) = args.option(b"--target") {
+        'brk: {
+            if cmd == CommandTag::BuildCommand {
+                if args.flag(b"--compile") {
+                    if target.len() > 4 && strings::has_prefix(target, b"bun-") {
+                        ctx.bundler_options.compile_target =
+                            cli::Cli::CompileTarget::from(&target[3..]);
+                        if !ctx.bundler_options.compile_target.is_supported() {
+                            Output::err_generic(
+                                "Unsupported compile target: {}\n",
+                                format_args!("{}", ctx.bundler_options.compile_target),
+                            );
+                            Global::exit(1);
+                        }
+                        opts.target = Some(api::Target::Bun);
+                        break 'brk;
+                    }
+                }
+            }
+
+            opts.target = Some(opts.target.unwrap_or_else(|| match target {
+                b"browser" => api::Target::Browser,
+                b"node" => api::Target::Node,
+                b"macro" => {
+                    if cmd == CommandTag::BuildCommand {
+                        api::Target::BunMacro
+                    } else {
+                        api::Target::Bun
+                    }
+                }
+                b"bun" => api::Target::Bun,
+                _ => cli::invalid_target(diag, target),
+            }));
+
+            if opts.target.unwrap() == api::Target::Bun {
+                ctx.debug.run_in_bun = opts.target.unwrap() == api::Target::Bun;
+            } else {
+                if ctx.bundler_options.bytecode {
+                    Output::err_generic(
+                        "target must be 'bun' when bytecode is true. Received: {}",
+                        format_args!(
+                            "{:?}",
+                            <bun_ast::Target as bun_options_types::TargetExt>::from_api(
+                                opts.target
+                            )
+                        ),
+                    );
+                    Global::exit(1);
+                }
+
+                if ctx.bundler_options.bake {
+                    Output::err_generic(
+                        "target must be 'bun' when using --app. Received: {}",
+                        format_args!(
+                            "{:?}",
+                            <bun_ast::Target as bun_options_types::TargetExt>::from_api(
+                                opts.target
+                            )
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    if args.flag(b"--watch") {
+        ctx.debug.hot_reload = HotReload::Watch;
+        bun_core::set_auto_reload_on_crash(true);
+
+        if args.flag(b"--no-clear-screen") {
+            let _ = bun_dotenv::HAS_NO_CLEAR_SCREEN_CLI_FLAG.set(true);
+        }
+    }
+
+    if args.flag(b"--compile") {
+        ctx.bundler_options.compile = true;
+        ctx.bundler_options.inline_entrypoint_import_meta_main = true;
+    }
+
+    if let Some(compile_exec_argv) = args.option(b"--compile-exec-argv") {
+        if !ctx.bundler_options.compile {
+            Output::err_generic("--compile-exec-argv requires --compile", ());
+            Global::crash();
+        }
+        ctx.bundler_options.compile_exec_argv = Some(compile_exec_argv.into());
+    }
+
+    for order_files in args.options(b"--bytecode-order") {
+        if !ctx.bundler_options.compile || !ctx.bundler_options.bytecode {
+            Output::err_generic("--bytecode-order requires --compile --bytecode", ());
+            Global::crash();
+        }
+        ctx.bundler_options.bytecode_order.extend(
+            strings::split(order_files, b",")
+                .filter(|path| !path.is_empty())
+                .map(Box::<[u8]>::from),
+        );
+    }
+
+    if let Some(jit_policy) = args.option(b"--compile-jit-policy") {
+        if !ctx.bundler_options.compile {
+            Output::err_generic("--compile-jit-policy requires --compile", ());
+            Global::crash();
+        }
+        match strings::str_utf8(jit_policy).and_then(|s| s.parse::<f32>().ok()) {
+            Some(scale) if scale.is_finite() && scale >= 1.0 => {
+                ctx.bundler_options.compile_jit_policy = scale;
+            }
+            _ => {
+                Output::err_generic(
+                    "Invalid value for --compile-jit-policy: \"{}\". Must be a number \\>= 1",
+                    format_args!("{}", BStr::new(jit_policy)),
+                );
+                Global::exit(1);
+            }
+        }
+    }
+
+    {
+        let assets = args.options(b"--asset");
+        if !assets.is_empty() {
+            if !ctx.bundler_options.compile {
+                Output::err_generic("--asset requires --compile", ());
+                Global::crash();
+            }
+            ctx.bundler_options.compile_assets = slice_to_owned(assets);
+        }
+    }
+
+    // Handle --compile-autoload-dotenv flags
+    {
+        let has_positive = args.flag(b"--compile-autoload-dotenv");
+        let has_negative = args.flag(b"--no-compile-autoload-dotenv");
+
+        if has_positive || has_negative {
+            if !ctx.bundler_options.compile {
+                Output::err_generic("--compile-autoload-dotenv requires --compile", ());
+                Global::crash();
+            }
+            if has_positive && has_negative {
+                Output::err_generic(
+                    "Cannot use both --compile-autoload-dotenv and --no-compile-autoload-dotenv",
+                    (),
+                );
+                Global::crash();
+            }
+            ctx.bundler_options.compile_autoload_dotenv = has_positive;
+        }
+    }
+
+    // Handle --compile-autoload-bunfig flags
+    {
+        let has_positive = args.flag(b"--compile-autoload-bunfig");
+        let has_negative = args.flag(b"--no-compile-autoload-bunfig");
+
+        if has_positive || has_negative {
+            if !ctx.bundler_options.compile {
+                Output::err_generic("--compile-autoload-bunfig requires --compile", ());
+                Global::crash();
+            }
+            if has_positive && has_negative {
+                Output::err_generic(
+                    "Cannot use both --compile-autoload-bunfig and --no-compile-autoload-bunfig",
+                    (),
+                );
+                Global::crash();
+            }
+            ctx.bundler_options.compile_autoload_bunfig = has_positive;
+        }
+    }
+
+    // Handle --compile-autoload-tsconfig flags (default: false, tsconfig not loaded at runtime)
+    {
+        let has_positive = args.flag(b"--compile-autoload-tsconfig");
+        let has_negative = args.flag(b"--no-compile-autoload-tsconfig");
+
+        if has_positive || has_negative {
+            if !ctx.bundler_options.compile {
+                Output::err_generic("--compile-autoload-tsconfig requires --compile", ());
+                Global::crash();
+            }
+            if has_positive && has_negative {
+                Output::err_generic(
+                    "Cannot use both --compile-autoload-tsconfig and --no-compile-autoload-tsconfig",
+                    (),
+                );
+                Global::crash();
+            }
+            ctx.bundler_options.compile_autoload_tsconfig = has_positive;
+        }
+    }
+
+    // Handle --compile-autoload-package-json flags (default: false, package.json not loaded at runtime)
+    {
+        let has_positive = args.flag(b"--compile-autoload-package-json");
+        let has_negative = args.flag(b"--no-compile-autoload-package-json");
+
+        if has_positive || has_negative {
+            if !ctx.bundler_options.compile {
+                Output::err_generic("--compile-autoload-package-json requires --compile", ());
+                Global::crash();
+            }
+            if has_positive && has_negative {
+                Output::err_generic(
+                    "Cannot use both --compile-autoload-package-json and --no-compile-autoload-package-json",
+                    (),
+                );
+                Global::crash();
+            }
+            ctx.bundler_options.compile_autoload_package_json = has_positive;
+        }
+    }
+
+    if let Some(path) = args.option(b"--compile-executable-path") {
+        if !ctx.bundler_options.compile {
+            Output::err_generic("--compile-executable-path requires --compile", ());
+            Global::crash();
+        }
+        ctx.bundler_options.compile_executable_path = Some(path.into());
+    }
+
+    if args.flag(b"--windows-hide-console") {
+        if ctx.bundler_options.compile_target.os != OperatingSystem::Windows {
+            Output::err_generic(
+                "--windows-hide-console requires a Windows compile target",
+                (),
+            );
+            Global::crash();
+        }
+        if !ctx.bundler_options.compile {
+            Output::err_generic("--windows-hide-console requires --compile", ());
+            Global::crash();
+        }
+        ctx.bundler_options.windows.hide_console = true;
+    }
+    if let Some(path) = args.option(b"--windows-icon") {
+        if !cfg!(windows) {
+            Output::err_generic(
+                "Using --windows-icon is only available when compiling on Windows",
+                (),
+            );
+            Global::crash();
+        }
+        if ctx.bundler_options.compile_target.os != OperatingSystem::Windows {
+            Output::err_generic("--windows-icon requires a Windows compile target", ());
+            Global::crash();
+        }
+        if !ctx.bundler_options.compile {
+            Output::err_generic("--windows-icon requires --compile", ());
+            Global::crash();
+        }
+        ctx.bundler_options.windows.icon = Some(path.into());
+    }
+    if let Some(title) = args.option(b"--windows-title") {
+        if !cfg!(windows) {
+            Output::err_generic(
+                "Using --windows-title is only available when compiling on Windows",
+                (),
+            );
+            Global::crash();
+        }
+        if ctx.bundler_options.compile_target.os != OperatingSystem::Windows {
+            Output::err_generic("--windows-title requires a Windows compile target", ());
+            Global::crash();
+        }
+        if !ctx.bundler_options.compile {
+            Output::err_generic("--windows-title requires --compile", ());
+            Global::crash();
+        }
+        ctx.bundler_options.windows.title = Some(title.into());
+    }
+    if let Some(publisher) = args.option(b"--windows-publisher") {
+        if !cfg!(windows) {
+            Output::err_generic(
+                "Using --windows-publisher is only available when compiling on Windows",
+                (),
+            );
+            Global::crash();
+        }
+        if ctx.bundler_options.compile_target.os != OperatingSystem::Windows {
+            Output::err_generic("--windows-publisher requires a Windows compile target", ());
+            Global::crash();
+        }
+        if !ctx.bundler_options.compile {
+            Output::err_generic("--windows-publisher requires --compile", ());
+            Global::crash();
+        }
+        ctx.bundler_options.windows.publisher = Some(publisher.into());
+    }
+    if let Some(version) = args.option(b"--windows-version") {
+        if !cfg!(windows) {
+            Output::err_generic(
+                "Using --windows-version is only available when compiling on Windows",
+                (),
+            );
+            Global::crash();
+        }
+        if ctx.bundler_options.compile_target.os != OperatingSystem::Windows {
+            Output::err_generic("--windows-version requires a Windows compile target", ());
+            Global::crash();
+        }
+        if !ctx.bundler_options.compile {
+            Output::err_generic("--windows-version requires --compile", ());
+            Global::crash();
+        }
+        ctx.bundler_options.windows.version = Some(version.into());
+    }
+    if let Some(description) = args.option(b"--windows-description") {
+        if !cfg!(windows) {
+            Output::err_generic(
+                "Using --windows-description is only available when compiling on Windows",
+                (),
+            );
+            Global::crash();
+        }
+        if ctx.bundler_options.compile_target.os != OperatingSystem::Windows {
+            Output::err_generic(
+                "--windows-description requires a Windows compile target",
+                (),
+            );
+            Global::crash();
+        }
+        if !ctx.bundler_options.compile {
+            Output::err_generic("--windows-description requires --compile", ());
+            Global::crash();
+        }
+        ctx.bundler_options.windows.description = Some(description.into());
+    }
+    if let Some(copyright) = args.option(b"--windows-copyright") {
+        if !cfg!(windows) {
+            Output::err_generic(
+                "Using --windows-copyright is only available when compiling on Windows",
+                (),
+            );
+            Global::crash();
+        }
+        if ctx.bundler_options.compile_target.os != OperatingSystem::Windows {
+            Output::err_generic("--windows-copyright requires a Windows compile target", ());
+            Global::crash();
+        }
+        if !ctx.bundler_options.compile {
+            Output::err_generic("--windows-copyright requires --compile", ());
+            Global::crash();
+        }
+        ctx.bundler_options.windows.copyright = Some(copyright.into());
+    }
+
+    if let Some(outdir) = args.option(b"--outdir") {
+        if !outdir.is_empty() {
+            ctx.bundler_options.outdir = outdir.into();
+        }
+    } else if let Some(outfile) = args.option(b"--outfile") {
+        if !outfile.is_empty() {
+            ctx.bundler_options.outfile = outfile.into();
+        }
+    }
+
+    if let Some(metafile) = args.option(b"--metafile") {
+        // If --metafile is passed without a value, default to "meta.json"
+        ctx.bundler_options.metafile = if !metafile.is_empty() {
+            Box::<[u8]>::from(metafile)
+        } else {
+            Box::<[u8]>::from(b"meta.json".as_slice())
+        };
+    }
+
+    if let Some(metafile_md) = args.option(b"--metafile-md") {
+        // If --metafile-md is passed without a value, default to "meta.md"
+        ctx.bundler_options.metafile_md = if !metafile_md.is_empty() {
+            Box::<[u8]>::from(metafile_md)
+        } else {
+            Box::<[u8]>::from(b"meta.md".as_slice())
+        };
+    }
+
+    if let Some(root_dir) = args.option(b"--root") {
+        if !root_dir.is_empty() {
+            ctx.bundler_options.root_dir = root_dir.into();
+        }
+    }
+
+    if let Some(format_str) = args.option(b"--format") {
+        let Some(format) = options::Format::from_string(format_str) else {
+            Output::err_generic(
+                "Invalid value for --format: {}. Must be 'esm', 'cjs', or 'iife'.",
+                (bun_core::fmt::quote(format_str),),
+            );
+            Global::crash();
+        };
+
+        match format {
+            options::Format::InternalBakeDev => {
+                bun_core::warn!(
+                    "--format={} is for debugging only, and may experience breaking changes at any moment",
+                    BStr::new(format_str)
+                );
+                Output::flush();
+            }
+            options::Format::Cjs => {
+                if ctx.args.target.is_none() {
+                    ctx.args.target = Some(api::Target::Node);
+                }
+            }
+            _ => {}
+        }
+
+        ctx.bundler_options.output_format = format;
+        if ctx.bundler_options.bytecode {
+            if format != options::Format::Cjs && format != options::Format::Esm {
+                Output::err_generic("format must be 'cjs' or 'esm' when bytecode is true.", ());
+                Global::exit(1);
+            }
+            // ESM bytecode requires --compile because module_info (import/export metadata)
+            // is only available in compiled binaries. Without it, JSC must parse the file
+            // twice (once for module analysis, once for bytecode), which is a deopt.
+            if format == options::Format::Esm && !ctx.bundler_options.compile {
+                Output::err_generic(
+                    "ESM bytecode requires --compile. Use --format=cjs for bytecode without --compile.",
+                    (),
+                );
+                Global::exit(1);
+            }
+        }
+    }
+
+    if args.flag(b"--splitting") {
+        ctx.bundler_options.code_splitting = true;
+    }
+    if args.flag(b"--no-split-require") {
+        ctx.bundler_options.split_require = false;
+    }
+    if args.flag(b"--no-module-preload") {
+        ctx.bundler_options.module_preload = false;
+    }
+
+    if let Some(size_str) = args.option(b"--min-chunk-size") {
+        let min_chunk_size = match strings::parse_int::<u64>(size_str, 10) {
+            Ok(v) => v,
+            Err(_) => {
+                Output::err_generic(
+                    "Invalid value for --min-chunk-size: \"{}\". Must be a non-negative integer\n",
+                    format_args!("{}", BStr::new(size_str)),
+                );
+                Global::exit(1);
+            }
+        };
+        if min_chunk_size > 0 && !ctx.bundler_options.code_splitting {
+            Output::err_generic("--min-chunk-size requires --splitting", ());
+            Global::crash();
+        }
+        ctx.bundler_options.min_chunk_size = Some(min_chunk_size);
+    }
+
+    for (flag, slot) in [
+        (
+            b"--entry-naming".as_slice(),
+            &mut ctx.bundler_options.entry_naming,
+        ),
+        (
+            b"--chunk-naming".as_slice(),
+            &mut ctx.bundler_options.chunk_naming,
+        ),
+        (
+            b"--asset-naming".as_slice(),
+            &mut ctx.bundler_options.asset_naming,
+        ),
+    ] {
+        if let Some(value) = args.option(flag) {
+            if let Some((pos, tail)) = options::find_unterminated_placeholder(value) {
+                Output::err_generic(
+                    "{}: unterminated \"{}\" placeholder (missing \"]\") at position {}",
+                    (BStr::new(flag), BStr::new(tail), pos),
+                );
+                Global::exit(1);
+            }
+            *slot = strings::concat(&[b"./", strings::remove_leading_dot_slash(value)]);
+        }
+    }
+
+    if args.flag(b"--react-fast-refresh") {
+        ctx.bundler_options.react_fast_refresh = true;
+    }
+
+    if args.flag(b"--react-compiler") {
+        ctx.bundler_options.react_compiler = true;
+    }
+
+    if let Some(setting) = args.option(b"--sourcemap") {
+        if setting.is_empty() {
+            // In the future, Bun is going to make this default to .linked
+            opts.source_map = Some(api::SourceMapMode::Linked);
+        } else if setting == b"inline" {
+            opts.source_map = Some(api::SourceMapMode::Inline);
+        } else if setting == b"none" {
+            opts.source_map = Some(api::SourceMapMode::None);
+        } else if setting == b"external" {
+            opts.source_map = Some(api::SourceMapMode::External);
+        } else if setting == b"linked" {
+            opts.source_map = Some(api::SourceMapMode::Linked);
+        } else {
+            bun_core::pretty_errorln!(
+                "<r><red>error<r>: Invalid sourcemap setting: \"{}\"",
+                BStr::new(setting)
+            );
+            Global::crash();
+        }
+
+        // When using --compile, only `external` sourcemaps work, as the
+        // runtime does not look at the source map comment. That override
+        // happens in build_command.rs once it's known whether --compile
+        // produces an executable or a standalone HTML file (browsers do read
+        // the comment, so standalone HTML keeps the user's choice).
+    }
+}

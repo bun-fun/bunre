@@ -35,8 +35,16 @@ JSArray* NodeVMModuleRequest::toJS(JSGlobalObject* globalObject) const
     RETURN_IF_EXCEPTION(scope, {});
 
     for (const auto& [key, value] : m_importAttributes) {
-        attributes->putDirect(globalObject->vm(), JSC::Identifier::fromString(globalObject->vm(), key), JSC::jsString(globalObject->vm(), value),
-            PropertyAttribute::ReadOnly | PropertyAttribute::DontDelete);
+        constexpr unsigned propertyAttributes = PropertyAttribute::ReadOnly | PropertyAttribute::DontDelete;
+        JSC::Identifier identifier = JSC::Identifier::fromString(vm, key);
+        JSValue attributeValue = JSC::jsString(vm, value);
+        // An attribute key can be any string literal, including an array index.
+        if (auto index = parseIndex(identifier)) {
+            attributes->putDirectIndex(globalObject, *index, attributeValue, propertyAttributes, PutDirectIndexLikePutDirect);
+            RETURN_IF_EXCEPTION(scope, {});
+        } else {
+            attributes->putDirect(vm, identifier, attributeValue, propertyAttributes);
+        }
     }
     array->putDirectIndex(globalObject, 1, attributes);
     RETURN_IF_EXCEPTION(scope, {});
@@ -806,5 +814,13 @@ void NodeVMModuleConstructor::finishCreation(VM& vm, JSObject* prototype)
 const JSC::ClassInfo NodeVMModule::s_info = { "NodeVMModule"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(NodeVMModule) };
 const JSC::ClassInfo NodeVMModulePrototype::s_info = { "NodeVMModule"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(NodeVMModulePrototype) };
 const JSC::ClassInfo NodeVMModuleConstructor::s_info = { "Module"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(NodeVMModuleConstructor) };
+
+JSC::JSModuleLoader* NodeVMModule::moduleLoader(JSGlobalObject* globalObject)
+{
+    auto scope = DECLARE_THROW_SCOPE(globalObject->vm());
+    NodeVMGlobalObject* contextGlobalObject = NodeVM::getGlobalObjectFromContext(globalObject, m_context.get(), false);
+    RETURN_IF_EXCEPTION(scope, nullptr);
+    return (contextGlobalObject ? contextGlobalObject : globalObject)->moduleLoader();
+}
 
 } // namespace Bun

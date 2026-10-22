@@ -158,7 +158,6 @@ fn registry() -> Registry {
         bun_lint_typescript::RULES,
         bun_lint_plugins::RULES,
         bun_lint_unicorn::RULES,
-        bun_lint_react::RULES,
         bun_lint_jest::RULES,
         bun_lint_json::RULES,
         bun_lint_markdown::RULES,

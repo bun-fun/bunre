@@ -6,7 +6,6 @@ bun_lint::rule_sets! {
         typescript: bun_lint_typescript,
         plugins: bun_lint_plugins,
         unicorn: bun_lint_unicorn,
-        react: bun_lint_react,
         jest: bun_lint_jest,
         json: bun_lint_json,
         markdown: bun_lint_markdown,

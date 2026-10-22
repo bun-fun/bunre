@@ -12,7 +12,6 @@ bun_lint_eslint.workspace = true
 bun_lint_typescript.workspace = true
 bun_lint_plugins.workspace = true
 bun_lint_unicorn.workspace = true
-bun_lint_react.workspace = true
 bun_lint_jest.workspace = true
 bun_lint_json.workspace = true
 bun_lint_markdown.workspace = true

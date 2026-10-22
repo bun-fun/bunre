@@ -857,12 +857,11 @@ impl AnyResponse {
         any_dispatch!(self, |r| r.get_buffered_amount())
     }
 
-    /// H2 and H3 have no batch tail.
+    /// H2 has no batch tail.
     pub fn has_fully_drained(self) -> bool {
         match self {
             AnyResponse::SSL(ptr) => TLSResponse::as_handle(ptr).has_fully_drained(),
             AnyResponse::TCP(ptr) => TCPResponse::as_handle(ptr).has_fully_drained(),
-            AnyResponse::H3(ptr) => H3Response::as_handle(ptr).get_buffered_amount() == 0,
             AnyResponse::H2(ptr) => H2Response::as_handle(ptr).get_buffered_amount() == 0,
         }
     }
@@ -962,7 +961,7 @@ impl AnyResponse {
             AnyResponse::TCP(ptr) => {
                 TCPResponse::as_handle(ptr).clear_handlers_of(user_data.cast())
             }
-            AnyResponse::H3(_) | AnyResponse::H2(_) => {}
+            AnyResponse::H2(_) => {}
         }
     }
 
@@ -971,7 +970,7 @@ impl AnyResponse {
         match self {
             AnyResponse::SSL(ptr) => TLSResponse::as_handle(ptr).close_after_message_if_parsing(),
             AnyResponse::TCP(ptr) => TCPResponse::as_handle(ptr).close_after_message_if_parsing(),
-            AnyResponse::H3(_) | AnyResponse::H2(_) => false,
+            AnyResponse::H2(_) => false,
         }
     }
 
@@ -1110,7 +1109,7 @@ impl AnyResponse {
     /// See `Response::can_upgrade`.
     pub fn can_upgrade(self) -> bool {
         match self {
-            AnyResponse::H3(_) | AnyResponse::H2(_) => false,
+            AnyResponse::H2(_) => false,
             AnyResponse::SSL(ptr) => TLSResponse::as_handle(ptr).can_upgrade(),
             AnyResponse::TCP(ptr) => TCPResponse::as_handle(ptr).can_upgrade(),
         }
@@ -1157,7 +1156,7 @@ impl AnyResponse {
         ctx: &mut WebSocketUpgradeContext,
     ) -> *mut Socket {
         match self {
-            AnyResponse::H3(_) | AnyResponse::H2(_) => core::ptr::null_mut(),
+            AnyResponse::H2(_) => core::ptr::null_mut(),
             AnyResponse::SSL(ptr) => {
                 TLSResponse::as_handle(ptr).upgrade_raw(data, handshake, deflate_params, ctx)
             }

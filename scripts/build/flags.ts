@@ -1726,6 +1726,13 @@ export function bunIncludes(cfg: Config): string[] {
     // std::ios_base::Init + the full locale facet set before main. Debug builds
     // keep the real header available for ad-hoc printf-debugging.
     ...(cfg.release ? [join(cwd, "src/banned-includes")] : []),
+    // Windows only: shadow the MSVC STL <compare>. The prebuilt WebKit ThinLTO
+    // bitcode was built against an STL without constructor templates in the
+    // ordering categories, so those types are returned in AL there. Current
+    // MSVC STL versions declare `template <int> constexpr X_ordering() = delete;`
+    // which makes clang classify the return as indirect (sret), and ThinLTO
+    // silently folds the mismatched call to a constant. See src/abi-compat/compare.
+    ...(cfg.windows ? [join(cwd, "src/abi-compat")] : []),
     join(cwd, "packages"),
     join(cwd, "packages/bun-usockets"),
     join(cwd, "packages/bun-usockets/src"),

@@ -36,11 +36,6 @@ pub(crate) mod compress_body;
 pub(crate) mod fetch_session;
 pub(crate) use self::fetch_session::FetchSession;
 
-/// `proxyInternals` of `bun:internal-for-testing`. `generated_js2native.rs`
-/// snake-cases `TestingAPIs` as `testing_ap_is`.
-#[path = "fetch/proxy_testing.rs"]
-pub(crate) mod testing_ap_is;
-
 // ──────────────────────────────────────────────────────────────────────────
 // fetch() implementation
 // ──────────────────────────────────────────────────────────────────────────

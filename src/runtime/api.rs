@@ -11,12 +11,9 @@ pub(crate) use crate::server::HTTPSServer;
 pub(crate) use crate::server::HTTPServer;
 pub(crate) use crate::server::SavedRequest;
 
-pub(crate) use crate::socket;
 pub(crate) use crate::socket::Listener;
 pub(crate) use crate::socket::NewSocket;
 pub(crate) use crate::socket::SocketAddress;
-
-pub(crate) use crate::crypto;
 
 // ─── BuildMessage / ResolveMessage ───────────────────────────────────────────
 // Canonical defs live in `bun_jsc` (with `#[bun_jsc::JsClass]` derives wiring
@@ -34,7 +31,7 @@ pub(crate) mod crash_handler_jsc;
 #[path = "api/cron.rs"]
 pub(crate) mod cron;
 #[path = "api/cron_parser.rs"]
-pub mod cron_parser;
+pub(crate) mod cron_parser;
 #[path = "api/filesystem_router.rs"]
 pub(crate) mod filesystem_router;
 #[path = "api/glob.rs"]
@@ -44,9 +41,9 @@ pub(crate) mod hash_object;
 #[path = "api/html_rewriter.rs"]
 pub(crate) mod html_rewriter;
 #[path = "api/js_bundle_completion_task.rs"]
-pub mod js_bundle_completion_task;
+pub(crate) mod js_bundle_completion_task;
 #[path = "api/bundler_plugin.rs"]
-pub mod js_bundler;
+pub(crate) mod js_bundler;
 #[path = "api/JSON5Object.rs"]
 pub(crate) mod json5_object;
 #[path = "api/JSONCObject.rs"]
@@ -113,20 +110,12 @@ pub(crate) mod bun {
     pub(crate) mod terminal {
         pub(crate) use crate::api::bun_terminal_body::Terminal;
     }
-    pub use terminal::Terminal;
+    pub(crate) use terminal::Terminal;
 }
 
-pub use crate::api::bun::ssl_context_cache as SSLContextCache;
-pub use crate::api::filesystem_router::FileSystemRouter;
-pub use crate::api::filesystem_router::MatchedRoute;
-pub use crate::api::hash_object as HashObject;
-pub use crate::api::js_bundler::BuildArtifact;
-pub use crate::api::js_bundler::JSBundler;
-pub use crate::api::json5_object as JSON5Object;
-pub use crate::api::toml_object as TOMLObject;
-pub use crate::api::unsafe_object as UnsafeObject;
-pub use crate::api::xml_object as XMLObject;
-pub use crate::api::yaml_object as YAMLObject;
+pub(crate) use crate::api::bun::ssl_context_cache as SSLContextCache;
+pub(crate) use crate::api::js_bundler::BuildArtifact;
+pub(crate) use crate::api::js_bundler::JSBundler;
 
 // ─── shared scaffold for Bun.{TOML,JSONC,JSON5,YAML,XML}.parse ───────────────
 //

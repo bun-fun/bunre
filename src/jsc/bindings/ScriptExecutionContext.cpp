@@ -122,12 +122,10 @@ void ScriptExecutionContext::stop()
 }
 
 extern "C" void Bun__closeSQLiteDatabasesOfGraphContext(ScriptExecutionContextIdentifier);
-extern "C" void Bun__closeNodeSqliteDatabasesOfGraphContext(ScriptExecutionContextIdentifier);
 
 void ScriptExecutionContext::closeSQLiteDatabases()
 {
     Bun__closeSQLiteDatabasesOfGraphContext(m_identifier);
-    Bun__closeNodeSqliteDatabasesOfGraphContext(m_identifier);
 }
 
 ScriptExecutionContextIdentifier ScriptExecutionContext::ownerOfSQLiteDatabase(JSC::JSGlobalObject* globalObject)

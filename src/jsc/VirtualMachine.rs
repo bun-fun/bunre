@@ -3408,7 +3408,7 @@ impl VirtualMachine {
         // Must run AFTER `ensure_waker()` (above) has set `event_loop_handle`,
         // since on macOS the kqueue registration resolves the platform loop via
         // `event_loop_ctx → uws_loop()`. No-op off macOS / when `--no-orphans`
-        // is not enabled. `init_with_module_graph` / `init_bake` route through
+        // is not enabled. `init_with_module_graph` routes through
         // here with their caller's `is_main_thread`; `init_worker` passes
         // `false` so workers never arm the watchdog.
         if opts.is_main_thread {
@@ -4182,9 +4182,7 @@ fn normalize_source(source: &[u8]) -> &[u8] {
 }
 
 // `JSGlobalObject` / `VM` are opaque `UnsafeCell`-backed ZST handles, so
-// `&T` is ABI-identical to a non-null `T*`. `BakeCreateProdGlobal`'s
-// `console_ptr` is an opaque round-trip pointer C++ stores into the new global
-// (never dereferenced as Rust data) — same contract as `Zig__GlobalObject__create`.
+// `&T` is ABI-identical to a non-null `T*`.
 unsafe extern "C" {
     safe fn Bun__promises__isErrorLike(global: &JSGlobalObject, reason: JSValue) -> bool;
     safe fn Bun__promises__emitUnhandledRejectionWarning(
@@ -4197,7 +4195,6 @@ unsafe extern "C" {
         global: &JSGlobalObject,
         reason: JSValue,
     ) -> JSValue;
-    safe fn BakeCreateProdGlobal(console_ptr: *mut c_void) -> *mut JSGlobalObject;
 }
 
 extern "C" fn free_ref_string(str_: *mut crate::ref_string::RefString, _: *mut c_void, _: usize) {
@@ -4851,44 +4848,6 @@ impl VirtualMachine {
             vm_ref.transpiler.configure_linker();
         } else {
             vm_ref.transpiler.configure_linker_with_auto_jsx(false);
-        }
-        Ok(vm)
-    }
-
-    /// Creates a `VirtualMachine` configured for the bake (dev server) runtime.
-    pub fn init_bake(opts: Options) -> crate::CrateResult<*mut VirtualMachine> {
-        let init_opts = InitOptions {
-            transform_options: opts.args,
-            log: opts.log,
-            env_loader: opts.env_loader,
-            smol: opts.smol,
-            mini_mode: opts.smol,
-            eval_mode: false,
-            is_main_thread: opts.is_main_thread,
-            ..Default::default()
-        };
-        // Note: shares the console / log / event-loop wiring with `init`;
-        // the only delta is the global is created via `BakeCreateProdGlobal`
-        // instead of `ZigGlobalObject__create`. Route through `init` then
-        // swap the global.
-        let vm = Self::init(init_opts)?;
-        // SAFETY: `vm` is the unique live VM on this thread.
-        let vm_ref = unsafe { &mut *vm };
-        // `console` is the opaque round-trip pointer C++ stores into the new global.
-        let new_global = BakeCreateProdGlobal(vm_ref.console.cast());
-        vm_ref.global = new_global;
-        VMHolder::set_cached_global_object(Some(new_global));
-        vm_ref.regular_event_loop.global = NonNull::new(new_global);
-        // `new_global` is freshly created and live for VM lifetime; safe
-        // ZST-handle deref. `vm_ptr()` returns the FFI `*mut VM` directly
-        // (no `&VM` reborrow).
-        vm_ref.jsc_vm = JSGlobalObject::opaque_ref(new_global).vm_ptr();
-        // SAFETY: per-thread uws loop is live.
-        unsafe { (*uws::Loop::get()).internal_loop_data.jsc_vm = vm_ref.jsc_vm.cast() };
-        vm_ref.event_loop_mut().ensure_waker();
-        if opts.smol {
-            // SAFETY: process-global written once at startup.
-            IS_SMOL_MODE.store(true, core::sync::atomic::Ordering::Relaxed);
         }
         Ok(vm)
     }

@@ -9,7 +9,6 @@ use bun_jsc::bindgen::JsScope;
 use bun_jsc::{self as jsc, CallFrame, JSGlobalObject, JSValue, JsCell, JsResult};
 use bun_uws as uws;
 
-use crate::node::util::validators;
 use crate::socket::{Listener, NewSocket, SocketFlags, TCPSocket, TLSSocket};
 
 static AUTO_SELECT_FAMILY_DEFAULT: AtomicBool = AtomicBool::new(true);

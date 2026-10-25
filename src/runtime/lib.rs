@@ -75,12 +75,4 @@ pub(crate) mod generated_jssink; // include!()s ${BUN_CODEGEN_DIR}/generated_jss
 pub(crate) mod dns_jsc;
 pub(crate) mod image;
 
-// ─── crate-root re-exports for `cli/` submodules ────────────────────────────
-// Modules under `src/runtime/cli/**` use crate-root paths
-// (`crate::Command`, `crate::run_command`, …).
-// Surface those names here
-// so `*_command.rs` files resolve their `use crate::…` lines without per-file
-// edits.
-pub use cli::{Cli, Command, command, run_command};
-
 pub(crate) mod webview;

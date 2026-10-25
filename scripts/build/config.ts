@@ -1633,32 +1633,27 @@ function computeBuildDirName(c: { debug: boolean; release: boolean; asan: boolea
 /**
  * Name of the output executable (no suffix).
  *
- * Debug builds: bun-debug. Release with ASAN: bun-asan. Etc.
- * The plain `bun` name (without -profile) only exists post-strip.
+ * One name for every profile: bunre ships a single binary, so debug, asan and
+ * release builds all link `bunre` in their own build directory instead of
+ * upstream's `bun-debug` / `bun-asan` / `bun-profile` ladder.
  *
  * Lives here (not bun.ts) so flags.ts can use it for linker-map filename
  * without a circular import.
  */
 export function bunExeName(cfg: Config): string {
-  if (cfg.debug) return "bun-debug";
-  // Release variants — suffix encodes which features differ from plain release.
-  // First match wins.
-  if (cfg.asan && cfg.valgrind) return "bun-asan-valgrind";
-  if (cfg.asan) return "bun-asan";
-  if (cfg.valgrind) return "bun-valgrind";
-  if (cfg.assertions) return "bun-assertions";
-  // Plain release: called bun-profile (the stripped one is `bun`).
-  return "bun-profile";
+  return "bunre";
 }
 
 /**
- * Whether this config produces a stripped `bun` alongside `bun-profile`.
+ * Whether this config produces a stripped copy of the linked binary.
  *
- * Only plain release builds strip — not debug (you want symbols), not
- * asan/valgrind (strip interferes), not assertions (usually debugging).
+ * Always false for bunre: the linked output already carries the shipped name
+ * (`bunre`), so upstream's paired strip — `bun-profile` kept for profiling
+ * plus a separately-stripped `bun` — has no second file to write, and
+ * stripping onto the link output itself would be a self-copy.
  */
 export function shouldStrip(cfg: Config): boolean {
-  return !cfg.debug && !cfg.asan && !cfg.valgrind && !cfg.assertions;
+  return false;
 }
 
 const c = { dim, cyan, green };

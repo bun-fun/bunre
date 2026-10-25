@@ -10,26 +10,15 @@ use bun_core::{pretty, pretty_error, pretty_errorln};
 
 // ─── compiling submodules ────────────────────────────────────────────────────
 #[path = "colon_list_type.rs"]
-pub mod colon_list_type;
+pub(crate) mod colon_list_type;
 #[path = "open.rs"]
-pub mod open;
+pub(crate) mod open;
 
 #[path = "Arguments.rs"]
 pub(crate) mod arguments;
 pub(crate) use arguments as Arguments;
 #[path = "run_command.rs"]
 pub(crate) mod run_command;
-#[path = "check_command.rs"]
-pub(crate) mod check_command;
-#[path = "format_command.rs"]
-pub(crate) mod format_command;
-#[path = "lint_command.rs"]
-pub(crate) mod lint_command;
-#[path = "lint_js.rs"]
-pub(crate) mod lint_js;
-#[path = "script_or_command.rs"]
-pub(crate) mod script_or_command;
-mod typescript_libs;
 
 
 // ─── crate-local helper for param-table concatenation ────────────────────────
@@ -103,7 +92,7 @@ pub(crate) fn cli_dupe(s: &[u8]) -> &'static [u8] {
 /// This is set `true` during `Command.which()` if argv0 is "node", in which the CLI is going
 /// to pretend to be node.js by always choosing RunCommand with a relative filepath.
 /// Node-compat mode flag (set when argv0 is "node").
-pub static PRETEND_TO_BE_NODE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+pub(crate) static PRETEND_TO_BE_NODE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 bun_core::declare_scope!(CLI, hidden);
 
@@ -127,8 +116,6 @@ impl colon_list_type::ColonListValue for &'static [u8] {
 // ─── Cli (entry point) ───────────────────────────────────────────────────────
 pub(crate) mod cli {
     use super::*;
-
-    pub(crate) use bun_options_types::compile_target::CompileTarget;
 
     // Process-global, init in start().
     pub(crate) static LOG_: bun_core::RacyCell<core::mem::MaybeUninit<bun_ast::Log>> =
@@ -291,9 +278,9 @@ pub(crate) use reserved_command as ReservedCommand;
 pub(crate) mod command {
     use super::*;
 
-    pub use bun_options_types::command_tag::Tag;
-    pub use bun_options_types::command_tag::{LOADS_CONFIG, USES_GLOBAL_OPTIONS};
-    pub use bun_options_types::context::{Context, ContextData, HotReload, TestOptions};
+    pub(crate) use bun_options_types::command_tag::Tag;
+    pub(crate) use bun_options_types::command_tag::{LOADS_CONFIG, USES_GLOBAL_OPTIONS};
+    pub(crate) use bun_options_types::context::{Context, ContextData, HotReload};
 
     // Process-lifetime
     // storage, written exactly once in `create_context_data` during
@@ -417,12 +404,6 @@ pub(crate) mod command {
                 Some(n) => first_arg_name = n,
                 None => return Tag::AutoCommand,
             }
-        }
-
-        // `bun --cwd <dir> lint`: `<dir>` is the value of a flag.
-        let starts_with_flag = argv.get(1).is_some_and(|it| it.starts_with(b"-"));
-        if starts_with_flag && let Some(it) = super::script_or_command::command_after_flags() {
-            first_arg_name = it;
         }
 
         type RootCommandMatcher = strings::ExactSizeMatcher<12>;
@@ -782,7 +763,6 @@ pub(crate) mod command {
         }
 
         if tag == Tag::AutoCommand && !ctx.runtime_options.eval.script.is_empty() {
-            lint_command::read_program_from_stdin(ctx);
             return run_command::RunCommand::exec_eval(ctx);
         }
 

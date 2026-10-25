@@ -93,6 +93,7 @@ pub(crate) enum StringObjects {
 /// is empty.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(crate) enum FileBlobs {
+    #[allow(dead_code)]
     Allow,
     /// Throws "File blob cannot be used here".
     Reject,
@@ -172,6 +173,7 @@ impl BlobOrStringOrBuffer {
         Ok(Some(Self::StringOrBuffer(str)))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn from_js_maybe_file(
         global: &JSGlobalObject,
         value: JSValue,
@@ -192,6 +194,7 @@ impl BlobOrStringOrBuffer {
         Ok(Some(Self::Blob(Box::new(blob.dupe()))))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn from_js(
         global: &JSGlobalObject,
         value: JSValue,
@@ -478,6 +481,7 @@ impl StringOrBuffer<'static> {
 
     /// For a work-pool job that reads the bytes.
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn thread_isolated_string(
         global: &JSGlobalObject,
         str: bun_core::String,
@@ -493,6 +497,7 @@ impl StringOrBuffer<'static> {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn from_js_with_encoding(
         global: &JSGlobalObject,
         value: JSValue,

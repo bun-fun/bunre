@@ -2734,23 +2734,6 @@ impl JSValue {
             JSC__JSValue__jestStrictDeepEquals(self, other, global)
         })
     }
-    /// `JSValue.jestDeepMatch` — `expect(a).toMatchObject(b)` /
-    /// snapshot-property-matcher subset comparison.
-    pub fn jest_deep_match(
-        self,
-        subset: JSValue,
-        global: &JSGlobalObject,
-        replace_props_with_asymmetric_matchers: bool,
-    ) -> JsResult<bool> {
-        host_fn::from_js_host_call_generic(global, || {
-            JSC__JSValue__jestDeepMatch(
-                self,
-                subset,
-                global,
-                replace_props_with_asymmetric_matchers,
-            )
-        })
-    }
 
     // ── BigInt ordering. ────────────────────────────────
     /// `JSValue.asBigIntCompare` — compare a BigInt against another BigInt or
@@ -2855,12 +2838,6 @@ unsafe extern "C" {
         this: JSValue,
         other: JSValue,
         global: &JSGlobalObject,
-    ) -> bool;
-    safe fn JSC__JSValue__jestDeepMatch(
-        this: JSValue,
-        subset: JSValue,
-        global: &JSGlobalObject,
-        replace_props: bool,
     ) -> bool;
     safe fn JSC__JSValue__asBigIntCompare(
         this: JSValue,

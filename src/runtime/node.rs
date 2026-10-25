@@ -16,7 +16,7 @@ pub(crate) mod assert {
 #[path = "node/types.rs"]
 pub(crate) mod types;
 pub(crate) use types::{
-    BlobOrStringOrBuffer, Dirent, Encoding, FileBlobs, Flavor, PathLike, PathOrBlob,
+    BlobOrStringOrBuffer, Dirent, Encoding, Flavor, PathLike, PathOrBlob,
     PathOrFileDescriptor, StringObjects, StringOrBuffer, ThreadIsolated, ThreadIsolatedArg,
 };
 
@@ -130,9 +130,6 @@ pub(crate) mod node_zlib_binding;
 
 #[path = "node/net/BlockList.rs"]
 pub(crate) mod block_list_impl;
-pub(crate) mod net {
-    pub(crate) use super::block_list_impl as block_list;
-}
 
 #[path = "node/zlib/NativeBrotli.rs"]
 pub(crate) mod native_brotli_impl;

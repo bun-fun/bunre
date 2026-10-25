@@ -9,7 +9,6 @@ use bun_collections::array_hash_map::ArrayHashContext;
 use bun_core::Output;
 use bun_paths::MAX_PATH_BYTES;
 
-use bun_paths::PathBuffer;
 
 use super::*;
 
@@ -434,51 +433,5 @@ impl From<PatternParseError> for crate::Error {
         match e {
             PatternParseError::InvalidRoutePattern => crate::Error::InvalidRoutePattern,
         }
-    }
-}
-
-/// Stack-allocated structure that is written to from end to start.
-/// Used as a staging area for building pattern strings.
-pub(crate) struct PatternBuffer {
-    pub(crate) bytes: PathBuffer,
-    // On Windows MAX_PATH_BYTES = 32767*3+1 = 98302
-    // (> u16::MAX), so u32 is required; u16 would truncate the initial index
-    // to 32766 and `slice()` would return ~64 KiB of trailing zero bytes.
-    pub(crate) i: u32,
-}
-
-impl PatternBuffer {
-    pub(crate) const EMPTY: PatternBuffer = PatternBuffer {
-        bytes: PathBuffer::ZEROED,
-        i: core::mem::size_of::<PathBuffer>() as u32,
-    };
-
-    pub(crate) fn prepend(&mut self, chunk: &[u8]) {
-        debug_assert!(self.i as usize >= chunk.len());
-        self.i -= u32::try_from(chunk.len()).expect("int cast");
-        self.slice_mut()[..chunk.len()].copy_from_slice(chunk);
-    }
-
-    pub(crate) fn prepend_part(&mut self, part: Part) {
-        match part {
-            Part::Text(text) => {
-                debug_assert!(text.is_empty() || text[0] != b'/');
-                self.prepend(text);
-                self.prepend(b"/");
-            }
-            Part::Param(name) | Part::CatchAll(name) | Part::CatchAllOptional(name) => {
-                self.prepend(name);
-                self.prepend(b"/:");
-            }
-            Part::Group(_) => {}
-        }
-    }
-
-    pub(crate) fn slice(&self) -> &[u8] {
-        &self.bytes[self.i as usize..]
-    }
-
-    fn slice_mut(&mut self) -> &mut [u8] {
-        &mut self.bytes[self.i as usize..]
     }
 }

@@ -386,7 +386,11 @@ impl JSBundleCompletionTask {
         let entry_key = executable_entry_point_name(&full_outfile_path);
 
         if !compile_options.assets.is_empty() {
-            if let Err(msg) = collect_compile_assets(&compile_options.assets, entry_key, output_files) {
+            if let Err(msg) = collect_compile_assets(
+                &compile_options.assets,
+                entry_key,
+                output_files,
+            ) {
                 return CompileResult::fail_fmt(format_args!("{}", msg));
             }
         }
@@ -1093,9 +1097,6 @@ impl CompletionStruct for JSBundleCompletionTask {
         transpiler.options.min_chunk_size = config.min_chunk_size;
         transpiler.options.fold_chunks = config.fold_chunks;
         transpiler.options.module_preload = config.module_preload;
-        transpiler.options.type_check = config
-            .check
-            .then_some(crate::cli::check_command::check_for_bun_build as options::TypeCheck);
         let compile_to_standalone_html = 'brk: {
             if config.compile.is_none() || config.target != bun_ast::Target::Browser {
                 break 'brk false;
@@ -1383,6 +1384,7 @@ impl bun_event_loop::Taskable for JSBundleCompletionTask {
         unsafe { (*this).context }
     }
 }
+
 /// Embed `--compile` assets (files or directories) into the standalone
 /// executable's output file list. Moved here from `cli/build_command.rs` when
 /// `bun build` was removed: `Bun.build({ compile })` is the only remaining
@@ -1414,6 +1416,8 @@ pub(crate) fn collect_compile_assets(
     }
     let mut push =
         |out: &mut Vec<options::OutputFile>, asset: &[u8], dest: Vec<u8>, bytes: Vec<u8>| {
+            // Names are stored as valid UTF-8, so two names that differ only in invalid bytes collide.
+            let dest = bstr::BStr::new(&dest).to_string().into_bytes();
             if seen.contains_key(&dest) {
                 return Err(format!(
                     "asset {} collides with another embedded file at {}",

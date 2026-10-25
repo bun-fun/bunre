@@ -1062,6 +1062,7 @@ pub(crate) mod inet {
     pub(crate) use bun_sys::net::{in_port_t, sa_family_t, sockaddr_in, sockaddr_in6};
     pub(crate) use ws2::AF_INET;
     pub(crate) use ws2::AF_INET6;
+    #[allow(dead_code)]
     pub(crate) type socklen_t = super::ares::ares_socklen_t;
 }
 

@@ -766,10 +766,9 @@ impl TimerObjectInternals {
         debug_assert!(!state.is_null(), "RuntimeState not installed");
 
         let now = Timespec::now(TimespecMockMode::AllowMockedTime);
-        // Only `Bun.sleep()` has an `interval` below 1.
-        // SAFETY: `state` is the boxed per-thread `RuntimeState`; field read only.
-        let min_delay = unsafe { (*state).timer.fake_timers.min_delay_ms() };
-        let scheduled_time = now.add_ms(i64::from(self.interval.get().max(min_delay)));
+        // Only `Bun.sleep()` has an `interval` below 1. bunre has no fake-timer
+        // clock, so there is no per-thread delay floor to respect.
+        let scheduled_time = now.add_ms(i64::from(self.interval.get()));
         let was_active = self.event_loop_timer_state() == EventLoopTimerState::ACTIVE;
         if was_active {
             // SAFETY: `state` is the boxed per-thread `RuntimeState`; fresh

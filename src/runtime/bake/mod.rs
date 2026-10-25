@@ -3,7 +3,6 @@
 //! server, server components, and other integrations. Instead of taking the
 //! role as a framework, Bake is tool for frameworks to build on top of.
 
-use bun_core::Output;
 
 pub(crate) mod router;
 
@@ -52,22 +51,6 @@ impl Mode {
             Mode::Development => bun_bundler::options::Format::InternalBakeDev,
             Mode::ProductionStatic => bun_bundler::options::Format::Esm,
         }
-    }
-}
-
-pub(crate) fn print_warning() {
-    // Silence this for the test suite
-    if bun_core::env_var::BUN_DEV_SERVER_TEST_RUNNER
-        .get()
-        .is_none()
-    {
-        bun_core::warn!(
-            "Be advised that Bun Bake is highly experimental, and its API\n\
-             will have breaking changes. Join the <magenta>#bake<r> Discord\n\
-             channel to help us find bugs: <blue>https://bun.com/discord<r>\n\
-             \n"
-        );
-        Output::flush();
     }
 }
 

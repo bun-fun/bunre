@@ -289,11 +289,6 @@ extern "C" long Bun__crashHandlerFromJSCFrame(void*, void*, void*, void*);
 // bun_icu_default_locale.cpp
 extern "C" void Bun__ensureICUDefaultLocale();
 
-// LintHost.cpp
-namespace Bun {
-JSC::JSObject* createLintHost(JSC::VM&, JSC::JSGlobalObject*);
-}
-
 extern "C" void Bun__VirtualMachine__setSamplingProfilerDirectory(void* bunVM, const BunString* directory);
 
 // The value of BUN_JSC_samplingProfilerPath. It isn't passed to JSC::Options, so VM::VM doesn't register JSC's atexit
@@ -2626,9 +2621,7 @@ void GlobalObject::finishCreation(VM& vm)
 
              init.set(crypto);
          } },
-        { OBJECT_OFFSETOF(GlobalObject, m_lintHost), [](const LazyProperty<JSGlobalObject, JSObject>::Initializer& init) {
-             init.set(Bun::createLintHost(init.vm, init.owner));
-         } },
+
         { OBJECT_OFFSETOF(GlobalObject, m_nodeErrorCache), [](const LazyProperty<JSGlobalObject, JSObject>::Initializer& init) {
              auto* structure = ErrorCodeCache::createStructure(
                  init.vm,

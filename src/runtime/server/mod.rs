@@ -2869,7 +2869,7 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
             // SNI: per-hostname contexts
             let sni_len = this_ref.config.sni.as_ref().map_or(0, |s| s.slice().len());
             for i in 0..sni_len {
-                let (name_ptr, name_len, sni_opts) = {
+                let (name_ptr, sni_opts) = {
                     let cfg = this_ref.get();
                     let sni_ssl_config = &cfg.config.sni.as_ref().unwrap().slice()[i];
                     let Some(sni_name) = sni_ssl_config.server_name_cstr() else {
@@ -2878,16 +2878,10 @@ impl<const SSL: bool, const DEBUG: bool> NewServer<SSL, DEBUG> {
                     if sni_name.to_bytes().is_empty() {
                         continue;
                     }
-                    (
-                        sni_name.as_ptr(),
-                        sni_name.to_bytes().len(),
-                        sni_ssl_config.as_usockets(),
-                    )
+                    (sni_name.as_ptr(), sni_ssl_config.as_usockets())
                 };
-                // SAFETY: name_ptr/name_len point into config.sni[i].server_name.
+                // SAFETY: name_ptr points into config.sni[i].server_name.
                 let sni_name = unsafe { bun_core::ffi::cstr(name_ptr) };
-                // SAFETY: sni_name is a CStr; NUL invariant holds for ZStr.
-                let z = unsafe { bun_core::ZStr::from_raw(name_ptr.cast(), name_len) };
 
                 // S012: `NewApp<SSL>` is a ZST opaque — safe `*mut → &mut` deref.
                 if bun_opaque::opaque_deref_mut(app)
@@ -3839,14 +3833,6 @@ impl AnyServer {
             skip_utf8_validation,
             compression
         ))
-    }
-
-    pub(crate) fn h3_alt_svc(&self) -> Option<&[u8]> {
-        match self.tag {
-            AnyServerTag::HTTPSServer => self.as_https().h3_alt_svc(),
-            AnyServerTag::DebugHTTPSServer => self.as_debug_https().h3_alt_svc(),
-            _ => None,
-        }
     }
 
     pub(crate) fn inspector_server_id(&self) -> jsc::DebuggerId {

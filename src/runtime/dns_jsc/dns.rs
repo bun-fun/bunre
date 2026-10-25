@@ -2443,9 +2443,8 @@ pub(crate) mod internal {
         fn us_internal_dns_callback_threadsafe(socket: *mut ConnectingSocket, req: *mut Request);
     }
 
-    pub enum DNSRequestOwner {
+    pub(crate) enum DNSRequestOwner {
         Socket(*mut ConnectingSocket), // FFI
-        Prefetch(*mut Loop),           // FFI
     }
 
     impl DNSRequestOwner {
@@ -2458,7 +2457,6 @@ pub(crate) mod internal {
                 DNSRequestOwner::Socket(socket) => unsafe {
                     us_internal_dns_callback_threadsafe(*socket, req)
                 },
-                DNSRequestOwner::Prefetch(_) => freeaddrinfo(req, 0),
             }
         }
     }

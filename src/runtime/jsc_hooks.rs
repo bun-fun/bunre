@@ -108,13 +108,10 @@ pub(crate) struct RuntimeState {
     /// has not been proven safe; keep the prior behavior of leaking any
     /// still-occupied slot while still freeing the pool allocation itself.
     pub(crate) body_value_pool: Box<core::mem::ManuallyDrop<crate::webcore::body::HiveAllocator>>,
-    pub(crate) active_handles: ActiveHandles,
     /// In-process `Bun.cron()` jobs that `--hot` reload / worker teardown must
     /// stop; one ref per entry, released by `CronJob::remove_from_list` /
     /// `clear_all_for_vm`.
     pub(crate) cron_jobs: Vec<bun_ptr::RefPtr<crate::api::cron::CronJob>>,
-    /// `bun lint`: what runs the rules of JavaScript plugins in this VM.
-    pub(crate) lint: core::cell::OnceCell<Box<crate::cli::lint_js::LintVm>>,
     /// The `uv_loop_t` that addons get for this VM. Stored inline because addons
     /// keep its address for as long as the VM lives.
     #[cfg(unix)]
@@ -204,23 +201,6 @@ pub(crate) fn global_dns_data() -> &'static core::cell::OnceCell<Box<crate::dns_
     // address is stable for the VM's lifetime and only read (interior
     // mutability via `OnceCell`).
     unsafe { &(*state).global_dns_data }
-}
-
-/// [`RuntimeState::lint`] of this thread's VM.
-#[inline]
-pub(crate) fn lint_vm() -> &'static core::cell::OnceCell<Box<crate::cli::lint_js::LintVm>> {
-    let state = runtime_state();
-    debug_assert!(!state.is_null(), "lint_vm before init_runtime_state");
-    // SAFETY: as `global_dns_data`.
-    unsafe { &(*state).lint }
-}
-
-/// Takes [`RuntimeState::lint`] out of this thread's VM, which is about to end.
-pub(crate) fn take_lint_vm() -> Option<Box<crate::cli::lint_js::LintVm>> {
-    let state = runtime_state();
-    debug_assert!(!state.is_null(), "take_lint_vm before init_runtime_state");
-    // SAFETY: this thread's state, and no `lint_vm()` borrow is live: the caller runs no JavaScript.
-    unsafe { (*state).lint.take() }
 }
 
 /// Recover the [`RuntimeState`] owned by a specific `vm` (not the calling
@@ -386,9 +366,7 @@ unsafe fn init_runtime_state(
                 )
             }
         },
-        active_handles: ActiveHandles::default(),
         cron_jobs: Vec::new(),
-        lint: core::cell::OnceCell::new(),
         // SAFETY: `vm` is the live VM being initialized. `VirtualMachine::init`
         // wrote `handle` before calling this hook (the wake context below reads
         // it the same way).
@@ -1284,12 +1262,8 @@ unsafe fn timer_remove(
 
 /// For `AbortSignal::Timeout`, which turns its delay into a deadline below this tier.
 fn timer_min_delay_ms() -> u32 {
-    let all = timer_all();
-    if all.is_null() {
-        return 0;
-    }
-    // SAFETY: `all` is the live per-thread `All`; leaf hook, field read only.
-    unsafe { (*all).fake_timers.min_delay_ms() }
+    // bunre has no fake-timer clock, so the floor is always the real one.
+    0
 }
 
 /// `Node.fs.NodeFS{ .vm = … }` lazy creation.
@@ -1729,105 +1703,37 @@ fn stop_dns_for_vm_teardown() -> SweepResult {
 }
 
 pub(crate) fn stop_active_handles_for_vm_teardown(vm: &mut VirtualMachine) -> SweepResult {
-    stop_active_handles(vm)
+    stop_active_handles(vm, bun_jsc::StopReason::VmTeardown)
 }
 
-fn stop_active_handles(_vm: &mut VirtualMachine) -> SweepResult {
-    let state = runtime_state();
-    if state.is_null() {
-        return SweepResult::Idle;
-    }
-    let mut result = SweepResult::Idle;
-    // SAFETY: `timer_all()` is the live per-thread `timer::All`; disable
-    // borrows only `event_loop_delay`.
-    unsafe { (*timer_all()).event_loop_delay.disable() };
-    loop {
-        // SAFETY: live boxed per-thread `RuntimeState`; the borrow ends before
-        // the close below re-enters JS.
-        let Some(kv) = (unsafe { &mut (*state).active_handles }).pop() else {
-            break;
-        };
-        result = SweepResult::Stopped;
-        match kv.key {
-            // SAFETY: live until it unregisters in `detach`.
-            ActiveHandle::FsWatcher(w) => unsafe { w.as_ref() }.close_for_isolation(),
-            // Live until it unregisters in `close()` (JS thread, us) — a
-            // registered entry implies `close()` has not run, and `deinit`
-            // cannot fire before `close()` drops the wrapper's Strong ref.
-            ActiveHandle::StatWatcher(w) => bun_ptr::ParentRef::from(w).close(),
-            ActiveHandle::Server(mut s) => s.stop(true),
-            ActiveHandle::Listener(l) => {
-                // SAFETY: live until it unregisters in `do_stop`/`finalize`.
-                crate::socket::Listener::stop_for_vm_teardown(unsafe { l.as_ref() })
-            }
-            ActiveHandle::UdpSocket(u) => {
-                // SAFETY: live until it unregisters in `on_close`.
-                crate::socket::udp_socket::UDPSocket::stop_for_vm_teardown(unsafe { u.as_ref() })
-            }
-            ActiveHandle::DuplexUpgrade(c) => {
-                // SAFETY: live until it unregisters in `deinit`.
-                let c = unsafe { bun_ptr::ThisPtr::new(c.as_ptr()) };
-                crate::socket::DuplexUpgradeContext::stop_for_vm_teardown(c)
-            }
-            // SAFETY: live until it unregisters when its deinit task runs.
-            #[cfg(windows)]
-            ActiveHandle::WindowsNamedPipe(c) => unsafe {
-                crate::socket::WindowsNamedPipeContext::stop_for_vm_teardown(c.as_ptr())
-            },
-            // SAFETY: live until it unregisters in `deinit`.
-            ActiveHandle::Fetch(t) => unsafe {
-                crate::webcore::fetch::FetchTasklet::stop_for_vm_teardown(t.as_ptr())
-            },
-            // SAFETY: live until they unregister in `on_response`.
-            ActiveHandle::S3Request(t) => unsafe {
-                crate::webcore::s3::simple_request::S3HttpSimpleTask::stop_for_vm_teardown(
-                    t.as_ptr(),
-                )
-            },
-            // SAFETY: as above.
-            ActiveHandle::S3Download(t) => unsafe {
-                crate::webcore::s3::download_stream::S3HttpDownloadStreamingTask::stop_for_vm_teardown(t.as_ptr())
-            },
-            // SAFETY: live until it unregisters in `on_complete_anytask`.
-            ActiveHandle::Bundle(c) => unsafe {
-                crate::api::js_bundle_completion_task::JSBundleCompletionTask::stop_for_vm_teardown(
-                    c.as_ptr(),
-                )
-            },
-            // Live until it unregisters in `destroy_channel`.
-            // SAFETY: registered ⇒ live; may free itself inside, not touched after.
-            ActiveHandle::DnsResolver(r) => unsafe {
-                let _ = crate::dns_jsc::Resolver::close_channel_for_terminate(r.as_ptr());
-            },
+/// One stop-phase sweep over what the VM's contexts own: every armed
+/// [`bun_jsc::AbortHandle`] (Node's `HandleWrap` list) is closed natively now,
+/// while the VM is alive, rather than by a GC finalizer during `~VM`.
+fn stop_active_handles(vm: &mut VirtualMachine, reason: bun_jsc::StopReason) -> SweepResult {
+    {
+        let all = timer_all();
+        if !all.is_null() {
+            // SAFETY: single JS thread, no re-entry while we hold the field
+            // borrow; `disable` borrows only `event_loop_delay` and reaches the
+            // heap through `timer_all()` (disjoint-field access).
+            unsafe { (*all).event_loop_delay.disable() };
         }
     }
-    result
+    vm.stop_context_handles(reason)
 }
 
-/// `TestReporterAgent.retroactivelyReportDiscoveredTests(agent, next_test_id)`.
-/// When `TestReporter.enable` arrives after test
-/// collection has started, walk the already-discovered scope tree, assign
-/// debugger test IDs, and emit `reportTestFoundWithLocation` for each.
-/// Returns `next_test_id` advanced past every ID assigned (the caller writes
-/// it back into `TestReporterAgent::next_test_id`).
-///
-/// # Safety
-/// `agent` is a live C++ `Inspector::TestReporterAgent::Handle*` (just stored
-/// into `debugger.test_reporter_agent.handle` by the caller). Called on the JS
+
 // ════════════════════════════════════════════════════════════════════════════
 // ConsoleObject runtime-type hooks
 // ════════════════════════════════════════════════════════════════════════════
+
+fn console_on_before_print() {}
 
 use bun_io::AsFmt;
 
 /// `ConsoleObject.Formatter.printAs(.Private, …)` runtime-type chain — see
 /// [`RuntimeHooks::console_print_runtime_object`]. Returns `true` when `value`
 /// matched one of the high-tier types and was fully formatted.
-/// The test reporter used to flush its pending line state here before
-/// console.log interleaved with it. bunre has no test runner, so the hook
-/// the C++ runtime-hooks table still references is a no-op.
-fn console_on_before_print() {}
-
 fn console_print_runtime_object<'a, 'f>(
     formatter: &'a mut bun_jsc::Formatter<'f>,
     writer: &'a mut dyn bun_io::Write,

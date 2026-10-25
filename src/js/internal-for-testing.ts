@@ -93,8 +93,6 @@ export const sslCtxLiveCount = $newRustFunction("SecureContext.rs", "jsLiveCount
 
 export const napiThreadsafeFunctionLiveCount = $newRustFunction("napi_body.rs", "jsThreadsafeFunctionLiveCount", 0);
 
-export const bundlerWorkerLiveCount: () => number = $newRustFunction("JSBundler.rs", "jsWorkerLiveCount", 0);
-
 export const semverIntersects = $newRustFunction("SemverObject.rs", "intersectsForTesting", 2) as (
   left: string,
   right: string,

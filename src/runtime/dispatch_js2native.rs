@@ -20,18 +20,6 @@ pub(crate) use bun_sql_jsc::postgres::create_binding as sql_jsc_postgres_create_
 // The real body already lives in this crate.
 pub(crate) use crate::api::crash_handler_jsc::js_bindings::generate as crash_handler_crash_handler_js_bindings_generate;
 
-pub(crate) use bun_install_jsc::hosted_git_info_jsc::js_from_url as install_hosted_git_info_testing_ap_is_js_from_url;
-pub(crate) use bun_install_jsc::hosted_git_info_jsc::js_parse_url as install_hosted_git_info_testing_ap_is_js_parse_url;
-pub(crate) use bun_install_jsc::install_binding::bun_install_js_bindings::generate as install_jsc_install_binding_bun_install_js_bindings_generate;
-pub(crate) use bun_install_jsc::npm_jsc::architecture_is_match as install_npm_architecture_js_function_architecture_is_match;
-pub(crate) use bun_install_jsc::npm_jsc::operating_system_is_match as install_npm_operating_system_js_function_operating_system_is_match;
-pub(crate) use bun_install_jsc::npm_jsc::package_manifest_bindings_generate as install_npm_package_manifest_bindings_generate;
-
-// The `*_jsc` bodies live in `bun_install_jsc::ini_jsc`
-// (ini's only JSC consumer is `bun install`'s npmrc loader).
-pub(crate) use bun_install_jsc::ini_jsc::ini_testing_load_npmrc_from_js as ini_ini_ini_testing_ap_is_load_npmrc_from_js;
-pub(crate) use bun_install_jsc::ini_jsc::ini_testing_parse as ini_ini_ini_testing_ap_is_parse;
-
 pub(crate) use bun_jsc::bytecode_order_recorder::names_for_testing as jsc_bytecode_order_recorder_names_for_testing;
 pub(crate) use bun_jsc::counters::create_counters_object as jsc_counters_create_counters_object;
 pub(crate) use bun_jsc::event_loop::get_active_tasks as jsc_event_loop_get_active_tasks;
@@ -56,7 +44,6 @@ pub(crate) use bun_sys_jsc::error_jsc::TestingAPIs::translate_nt_status_to_e as 
 pub(crate) use bun_sys_jsc::error_jsc::TestingAPIs::translate_uv_error_to_e as sys_sys_testing_ap_is_translate_uv_error_to_e;
 
 pub(crate) use bun_http_jsc::headers_jsc::h2_live_counts as http_h2_client_testing_ap_is_live_counts;
-pub(crate) use bun_http_jsc::headers_jsc::h3_quic_live_counts as http_h3_client_testing_ap_is_quic_live_counts;
 
 mod css {
     pub(crate) use bun_css_jsc::css_internals::{

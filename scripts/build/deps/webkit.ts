@@ -41,7 +41,7 @@ export const WEBKIT_VERSION = "d0b16ad0ce2bac652f0f63cdcc642a7d3ba69631";
  */
 
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Config } from "../config.ts";
 import { computeCpuTargetFlags } from "../flags.ts";
 import { slash } from "../shell.ts";
@@ -136,6 +136,28 @@ function bmallocLib(cfg: Config): string {
 }
 
 /**
+ * Whether this build trims ICU's data package.
+ *
+ * Windows release only. The trimmer parses the PE/COFF object holding the
+ * package (`icudt78l_dat.o`, symbols `icudt78_dat` / `bun_icu_zstd_dict`),
+ * which only the Windows prebuilt ships as an archive we can rewrite; posix
+ * links `libicudata.a` and the debug tarball names its member differently.
+ */
+function shouldTrimIcu(cfg: Config): boolean {
+  return cfg.windows && cfg.webkit === "prebuilt" && !cfg.debug && cfg.nm !== undefined && cfg.readobj !== undefined;
+}
+
+/** Where the trim edge writes — per build dir, so the shared cache stays pristine. */
+function icuTrimDir(cfg: Config): string {
+  return resolve(depBuildDir(cfg, "WebKit"), "icu-trim");
+}
+
+/** The trimmed `sicudt.lib` this build links instead of the prebuilt one. */
+function trimmedIcuDataLib(cfg: Config): string {
+  return resolve(icuTrimDir(cfg), "sicudt.lib");
+}
+
+/**
  * ICU libs — prebuilt bundles them on linux/windows. macOS uses system ICU.
  * Local mode: system ICU on posix (linked via -licu* in bun.ts); built from
  * source on Windows (see icuDir/icuLibs).
@@ -143,7 +165,10 @@ function bmallocLib(cfg: Config): string {
 function prebuiltIcuLibs(cfg: Config): string[] {
   if (cfg.windows) {
     const d = cfg.debug ? "d" : "";
-    return [`lib/sicudt${d}.lib`, `lib/sicuin${d}.lib`, `lib/sicuuc${d}.lib`];
+    // The data package is 11.55 MB of the binary and almost all of it is
+    // locales this fork doesn't ship — see scripts/build/icu-trim.ts.
+    const data = shouldTrimIcu(cfg) ? trimmedIcuDataLib(cfg) : `lib/sicudt${d}.lib`;
+    return [data, `lib/sicuin${d}.lib`, `lib/sicuuc${d}.lib`];
   }
   if (cfg.linux || cfg.freebsd) {
     return ["lib/libicudata.a", "lib/libicui18n.a", "lib/libicuuc.a"];
@@ -211,6 +236,33 @@ export const webkit: Dependency = {
       // macOS: bundled ICU headers conflict with system ICU.
       if (cfg.darwin) {
         src.rmAfterExtract = ["include/unicode"];
+      }
+      // Windows release: rewrite the ICU data package down to the locales we
+      // ship. Output lands in the build dir and `provides.libs` links it, so
+      // the cached tarball stays the untrimmed original.
+      if (shouldTrimIcu(cfg)) {
+        const prebuiltIcu = resolve(prebuiltDestDir(cfg), "lib", "sicudt.lib");
+        src.preBuild = {
+          command: [
+            cfg.jsRuntime,
+            resolve(cfg.cwd, "scripts", "build", "icu-trim.ts"),
+            icuTrimDir(cfg),
+            "--webkit",
+            prebuiltIcu,
+            "--cc",
+            cfg.cc,
+            // cfg.ar is llvm-lib on Windows; the trimmer uses GNU ar syntax.
+            "--ar",
+            resolve(dirname(cfg.ar), "llvm-ar.exe"),
+            "--nm",
+            cfg.nm!,
+            "--readobj",
+            cfg.readobj!,
+          ],
+          cwd: cfg.cwd,
+          inputs: [prebuiltIcu],
+          outputs: [trimmedIcuDataLib(cfg)],
+        };
       }
       return src;
     }

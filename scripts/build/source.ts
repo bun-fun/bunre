@@ -155,6 +155,13 @@ export type Source =
        * (WebKit, nodejs-headers) override to `cacheDir/<name>-<version>/`.
        */
       destDir?: string;
+      /**
+       * Derived artifact built from the extracted tarball (WebKit's trimmed
+       * ICU data). Runs after extraction, before anything links; the spec's
+       * `provides.libs` points at the output, and `inputs` at the prebuilt
+       * file it rewrites. The shared cache is never modified.
+       */
+      preBuild?: PreBuildSpec;
     };
 
 /**
@@ -362,6 +369,12 @@ export interface PreBuildSpec {
   command: string[];
   /** Working directory (absolute). */
   cwd: string;
+  /**
+   * Files the command reads that the source step (fetch/extract) creates.
+   * Declared as implicit outputs of the fetch edge so ninja knows where they
+   * come from; the command's outputs are NOT (they're the point of the edge).
+   */
+  inputs?: string[];
   /**
    * Output files (absolute paths). These become implicit inputs to cmake
    * configure, so configure waits on them and re-runs if they change.
@@ -1078,9 +1091,16 @@ function emitPrebuilt(
   // Outputs: stamp + all libs. Stamp is the explicit output; libs are
   // implicit (so deleting them correctly retriggers fetch, and restat
   // prunes downstream when fetch was a no-op).
+  const preBuild = source.preBuild;
+  const preBuildOutputs = preBuild?.outputs ?? [];
+  const preBuildInputs = preBuild?.inputs ?? [];
+  const hostWin = cfg.host.os === "windows";
+
   n.build({
     outputs: [stamp],
-    implicitOutputs: libs,
+    // The files the tarball ships. preBuild outputs are derived from these, so
+    // they're not implicit outputs here — dep_prebuild produces them.
+    implicitOutputs: [...libs.filter(l => !preBuildOutputs.includes(l)), ...preBuildInputs],
     rule: "dep_fetch_prebuilt",
     inputs: [],
     // Only fetch-cli.ts. download.ts has a lot of shared helpers — editing
@@ -1096,10 +1116,27 @@ function emitPrebuilt(
       rm_paths: (source.rmAfterExtract ?? []).join(" "),
     },
   });
+
+  // Derived artifact from the extracted tarball (WebKit's trimmed ICU data).
+  // restat: a re-run that produces the same bytes prunes the relink.
+  if (preBuild !== undefined) {
+    n.build({
+      outputs: preBuildOutputs,
+      rule: "dep_prebuild",
+      inputs: [],
+      implicitInputs: [stamp, ...preBuildInputs],
+      vars: {
+        name,
+        cwd: preBuild.cwd,
+        cmd: quoteArgs(preBuild.command, hostWin),
+      },
+    });
+    n.phony(`prebuild-${name}`, preBuildOutputs);
+  }
   // Downstream should depend on: libs if there are any (compile-link deps),
   // otherwise the stamp (header-only deps like nodejs-headers — downstream
   // just needs the files to EXIST, stamp proves extraction happened).
-  const outputs = libs.length > 0 ? libs : [stamp];
+  const outputs = libs.length > 0 ? [...libs, ...preBuildOutputs] : [stamp, ...preBuildOutputs];
   n.phony(name, outputs);
 
   return {

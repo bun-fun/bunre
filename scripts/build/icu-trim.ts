@@ -62,13 +62,19 @@
  *
  *   bun scripts/build/icu-trim.ts <out-dir> [--keep <regex>]
  *                            [--keep-all] [--keep-lang-dicts] [--webkit <lib>]
+ *                            [--cc <clang-cl>] [--ar <llvm-ar>]
+ *                            [--nm <llvm-nm>] [--readobj <llvm-readobj>]
  *
  * `--keep` matches the *leaf* of a locale bundle and is unanchored at the end,
  * so `^(root|und|en|zh)(_|$)` keeps `en`, `en_GB`, `zh_Hans_CN`, … Writes
- * <out-dir>/sicudt.lib plus the extracted icudt78l.dat and icu_dict.bin. Copy
- * it over ~/.bun/build-cache/webkit-<sha>-lto/lib/sicudt.lib and rebuild.
- * ALWAYS keep a copy of the original: the prebuilt is re-downloaded on a WebKit
- * version change, which is the safe way back.
+ * <out-dir>/sicudt.lib plus the extracted icudt78l.dat and icu_dict.bin.
+ *
+ * The build runs this for every release Windows build: deps/webkit.ts adds a
+ * `prebuild WebKit` edge whose output is <build-dir>/deps/WebKit/icu-trim/
+ * sicudt.lib, and links that instead of the prebuilt `lib/sicudt.lib`. The
+ * shared cache is left untouched, so re-extracting the tarball always restores
+ * the untrimmed original. Run it by hand only to inspect a candidate trim —
+ * copying the result over the cache is what this replaced.
  *
  * ## Package layout (derived empirically, see SLEEPING-PLAN.md section 8)
  *
@@ -105,10 +111,23 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync,
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-const AR = "d:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/llvm-ar.exe";
-const CC = "d:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe";
-const NM = "d:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/llvm-nm.exe";
-const RE = "d:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin/llvm-readobj.exe";
+const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+const flag = (name: string) => {
+  const i = process.argv.indexOf(name);
+  return i >= 0 ? process.argv[i + 1] : "";
+};
+const has = (name: string) => process.argv.includes(name);
+
+// Toolchain: the build passes its own clang-cl / llvm-ar / llvm-nm / llvm-readobj
+// (cfg.cc / cfg.ar / cfg.nm / cfg.readobj) so the trimmed archive is produced by
+// the same LLVM the link uses. The fallbacks keep a hand-run
+// `bun scripts/build/icu-trim.ts` working on a machine with VS installed.
+const LLVM_BIN = "d:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin";
+const tool = (flagName: string, exe: string) => flag(flagName) || join(LLVM_BIN, exe);
+const AR = tool("--ar", "llvm-ar.exe");
+const CC = tool("--cc", "clang-cl.exe");
+const NM = tool("--nm", "llvm-nm.exe");
+const RE = tool("--readobj", "llvm-readobj.exe");
 
 // config.ts <-> deps/webkit.ts form an import cycle that only resolves when
 // config.ts is evaluated first, so importing WEBKIT_VERSION from here throws
@@ -154,17 +173,27 @@ const ENT = 148;
 // an exact set.
 const DEFAULT_KEEP = "^(root|und|en|zh)(_|$)";
 
-const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
-const flag = (name: string) => {
-  const i = process.argv.indexOf(name);
-  return i >= 0 ? process.argv[i + 1] : "";
-};
-const has = (name: string) => process.argv.includes(name);
-
 const outDir = resolve(process.argv[2] || "icu-trim-out");
 mkdirSync(outDir, { recursive: true });
 
 // --- 1. pull the single member out of the prebuilt archive -----------------
+// The prebuilt ships `icudt78l_dat.o`; a package this script produced ships
+// `icu_data.obj`. The latter means someone copied a trimmed archive over the
+// cache (what the old instructions said to do) — there is nothing to trim, so
+// the build links it unchanged instead of failing on the member name.
+const members = stripAnsi(execFileSync(AR, ["t", WEBKIT_LIB], { encoding: "utf8" }))
+  .trim()
+  .split(/\r?\n/);
+if (members.includes("icu_data.obj")) {
+  const libPath = join(outDir, "sicudt.lib");
+  writeFileSync(libPath, readFileSync(WEBKIT_LIB));
+  console.log(`${WEBKIT_LIB} already holds a trimmed package (icu_data.obj); linking it as-is`);
+  console.log(`wrote ${libPath}`);
+  process.exit(0);
+}
+if (!members.includes("icudt78l_dat.o")) {
+  throw new Error(`unexpected archive members in ${WEBKIT_LIB}: ${members.join(", ")}`);
+}
 execFileSync(AR, ["x", WEBKIT_LIB, `--output=${outDir}`]);
 const objPath = join(outDir, "icudt78l_dat.o");
 const obj = readFileSync(objPath);
@@ -403,5 +432,5 @@ for (const s of ["icudt78_dat", "bun_icu_zstd_dict", "bun_icu_zstd_dict_size"]) 
 console.log(`wrote ${libPath} — all three symbols global`);
 console.log(`validate: bash tmp/icu-probe/build.sh ${libPath} && tmp/icu-probe/probe.exe`);
 console.log(
-  `then install: cp ${libPath} "$USERPROFILE/.bun/build-cache/webkit-${v16}-lto/lib/sicudt.lib" (keep the original!), and run bun run build:release`,
+  `the build links this file directly (deps/webkit.ts prebuild WebKit); nothing to install by hand`,
 );

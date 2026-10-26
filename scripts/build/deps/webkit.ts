@@ -261,6 +261,9 @@ export const webkit: Dependency = {
           ],
           cwd: cfg.cwd,
           inputs: [prebuiltIcu],
+          // Editing the keep rule must re-run the trim: the command line is
+          // unchanged, so ninja only notices through this dependency.
+          implicitInputs: [resolve(cfg.cwd, "scripts", "build", "icu-trim.ts")],
           outputs: [trimmedIcuDataLib(cfg)],
         };
       }

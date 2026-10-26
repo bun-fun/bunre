@@ -376,6 +376,12 @@ export interface PreBuildSpec {
    */
   inputs?: string[];
   /**
+   * Extra files that change the output but are not produced by fetch — the
+   * script itself, normally. Without these, editing the script leaves a stale
+   * output in place: ninja only sees the command line, which hasn't changed.
+   */
+  implicitInputs?: string[];
+  /**
    * Output files (absolute paths). These become implicit inputs to cmake
    * configure, so configure waits on them and re-runs if they change.
    * Also the ninja outputs — if missing, preBuild runs.
@@ -1124,7 +1130,7 @@ function emitPrebuilt(
       outputs: preBuildOutputs,
       rule: "dep_prebuild",
       inputs: [],
-      implicitInputs: [stamp, ...preBuildInputs],
+      implicitInputs: [stamp, ...preBuildInputs, ...(preBuild.implicitInputs ?? [])],
       vars: {
         name,
         cwd: preBuild.cwd,

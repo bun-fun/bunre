@@ -4,9 +4,10 @@
  * bunre's ICU data package is not in this repo. It arrives as `sicudt.lib`
  * inside the prebuilt WebKit tarball (see scripts/build/deps/webkit.ts,
  * `prebuiltIcuLibs`) and is 11.55 MB of the executable — the single largest
- * non-JSC item. Trimming it to English + Chinese keeps 890 of 3,990 items and
- * the package goes 11.55 MB -> 5.71 MB, which measured as
- * 74,130,944 -> 68,007,424 bytes on `bunre-dbg.exe` (−5.84 MB, 7.9%).
+ * non-JSC item. Trimming it to English + Chinese keeps 889 of 3,990 items and
+ * the package goes 11.55 MB -> 3.80 MB; the en+zh trim alone (before
+ * `brkitr/cjdict` was dropped) measured as 74,130,944 -> 68,007,424 bytes on
+ * `bunre-dbg.exe` (−5.84 MB, 7.9%).
  *
  * ## What may be dropped
  *
@@ -178,24 +179,20 @@ mkdirSync(outDir, { recursive: true });
 
 // --- 1. pull the single member out of the prebuilt archive -----------------
 // The prebuilt ships `icudt78l_dat.o`; a package this script produced ships
-// `icu_data.obj`. The latter means someone copied a trimmed archive over the
-// cache (what the old instructions said to do) — there is nothing to trim, so
-// the build links it unchanged instead of failing on the member name.
+// `icu_data.obj` (someone copied a trimmed archive over the cache, as the old
+// instructions said to). Both hold the same three symbols in the same .rdata
+// layout, so either is a valid input: re-trimming a trimmed package under a
+// stricter keep rule is exactly what a keep-rule change needs, and under the
+// same rule it drops nothing.
 const members = stripAnsi(execFileSync(AR, ["t", WEBKIT_LIB], { encoding: "utf8" }))
   .trim()
   .split(/\r?\n/);
-if (members.includes("icu_data.obj")) {
-  const libPath = join(outDir, "sicudt.lib");
-  writeFileSync(libPath, readFileSync(WEBKIT_LIB));
-  console.log(`${WEBKIT_LIB} already holds a trimmed package (icu_data.obj); linking it as-is`);
-  console.log(`wrote ${libPath}`);
-  process.exit(0);
-}
-if (!members.includes("icudt78l_dat.o")) {
+const member = members.find(m => m === "icudt78l_dat.o" || m === "icu_data.obj");
+if (!member) {
   throw new Error(`unexpected archive members in ${WEBKIT_LIB}: ${members.join(", ")}`);
 }
-execFileSync(AR, ["x", WEBKIT_LIB, `--output=${outDir}`]);
-const objPath = join(outDir, "icudt78l_dat.o");
+execFileSync(AR, ["x", WEBKIT_LIB, member, `--output=${outDir}`]);
+const objPath = join(outDir, member);
 const obj = readFileSync(objPath);
 
 // --- 2. locate .rdata and the three symbols --------------------------------
@@ -263,29 +260,41 @@ const isLocaleLeaf = (leaf: string) => {
   return parts.length <= 5 && parts.slice(1).every(p => SCRIPT.test(p) || REGION.test(p) || VARIANT.test(p));
 };
 
-// Dictionary-based word breaking for four scripts that need a per-script word
-// list rather than rules. They are not locale bundles, so the locale rule above
-// cannot reach them; each is dropped when its own locale is not kept
-// (`cjdict.dict` covers Han/Hiragana/Katakana/Hangul and is kept by `zh`).
-const DICT_LOCALE: Record<string, string> = {
-  thaidict: "th",
-  laodict: "lo",
-  burmesedict: "my",
-  khmerdict: "km",
+// Dictionary data for the dictionary-driven break engines. Not locale bundles,
+// so the locale rule above cannot reach them: each is kept only when one of the
+// locales that actually pulls it in is kept.
+//
+// `cjdict` (Han/Hiragana/Katakana/Hangul, 1.92 MB) is the odd one: ICU builds
+// the dictionary break engine when a locale bundle declaring it is opened, and
+// that is ja/ko's brkitr bundle — zh's is rules-only. Measured with the probe
+// trace: a full package loads it and zh word segmentation follows the
+// dictionary; with ja/ko dropped the item is never opened at all and zh falls
+// back to the rules, so keeping it only pads the binary.
+const DICT_LOCALES: Record<string, string[]> = {
+  thaidict: ["th"],
+  laodict: ["lo"],
+  burmesedict: ["my"],
+  khmerdict: ["km"],
+  cjdict: ["ja", "ko"],
 };
 
 const keepRe = has("--keep") ? flag("--keep") : DEFAULT_KEEP;
 const keepLocale = new RegExp(keepRe, "i");
 const keepAll = has("--keep-all");
 const keepDicts = has("--keep-lang-dicts");
+// `--drop <regex>` matches the item name after the `icudt78l/` prefix and wins
+// over every keep rule. For probing a candidate cut (`--drop 'coll/zh'`)
+// before deciding to make it the default.
+const dropRe = has("--drop") ? new RegExp(flag("--drop"), "i") : undefined;
 
 const keepItem = (name: string): boolean => {
   if (keepAll) return true;
   const b = bare(name);
+  if (dropRe?.test(b)) return false;
   if (!isRes(name)) {
     const m = /^brkitr\/([a-z]+)\.dict$/.exec(b);
-    const lang = m ? DICT_LOCALE[m[1]] : undefined;
-    return !lang || keepDicts || keepLocale.test(lang);
+    const langs = m ? DICT_LOCALES[m[1]] : undefined;
+    return !langs || keepDicts || langs.some(l => keepLocale.test(l));
   }
   const leaf = leafOf(name);
   // `pool.res` in every tree holds the display names of the locales that have
